@@ -9,6 +9,8 @@
     mais_amadeirado: 'Mais amadeirado', mais_apimentado: 'Mais apimentado' };
   const POR = { ifra: 'limite da IFRA', frasco: 'o que cabe no frasco', estoque: 'estoque do vidro' };
   const CONFIANCA = { alta: 'alta', media: 'média' };
+  const NIVEL = { erro: 'erro', aviso: 'aviso' };
+  const ML_DO_FRASCO = new Map([[4.4, 5], [8.8, 10], [26.5, 30], [44, 50]]);      // massa final (g) -> ml, como na pergunta de volume
   const DILUICOES = [100, 50, 25, 10, 5, 2, 1, 0.5, 0.1];
   const fmt = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
   const plural = (n, um, varios) => n + ' ' + (n === 1 ? um : varios);
@@ -139,7 +141,7 @@
     (c.faltando || []).forEach(f => box.append(el('p', { class: 'falta' },
       'Esta máquina não tem ' + f.nome + (f.equivalentes.length ? ' (parecidos que ela tem: ' + f.equivalentes.join(', ') + ')' : '') + '.')));
     c.escolhas.forEach(e => box.append(el('p', { class: 'dica' }, 'Você pode trocar em "' + e.item + '": ' + e.opcoes.join(', ') + '.')));
-    if (c.tecnico) box.append(el('details', {}, el('summary', {}, 'Técnico'), el('pre', {}, JSON.stringify(c.tecnico, null, 1))));
+    if (c.tecnico) box.append(blocoTecnico(c.tecnico));
     if (acao) box.append(el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: acao }, rotulo)));
     return box;
   }
@@ -154,6 +156,75 @@
       ...lista.map(x => el('div', { class: 'cuidado ' + x.gravidade },
         el('b', {}, x.titulo), el('div', {}, x.texto), el('div', { class: 'dica' }, 'Na sua receita: ' + x.materiais.join(', ') + '. O que fazer: ' + x.dica),
         tecnico ? el('details', {}, el('summary', {}, 'Fontes (confiança ' + CONFIANCA[x.confianca] + ')'), el('ul', {}, ...x.fontes.map(fonte))) : '')));
+  }
+
+  /* Modo técnico: o que o motor decidiu, em blocos que se leem; o JSON que a máquina recebe fica atrás de um botão, nunca na tela. */
+  function blocoTecnico(t) {
+    const itens = (lista, vazio) => lista.length ? el('ul', {}, ...lista.map(x => el('li', {}, x))) : el('p', { class: 'dica' }, vazio);
+    const copiado = el('span', { class: 'dica', role: 'status' });
+    const copiar = el('button', { class: 'sec', onclick: async () => {
+      try { await navigator.clipboard.writeText(JSON.stringify(t.job)); copiado.textContent = 'Copiado.'; } catch { copiado.textContent = 'Este navegador não deixou copiar.'; }
+    } }, 'Copiar para a máquina');
+    return el('details', { class: 'tecnico' }, el('summary', {}, 'Técnico'),
+      el('h3', {}, 'Como o motor montou'), itens(t.explicacao, 'Sem detalhes.'),
+      el('h3', {}, 'Limites que agiram'), itens(t.avisos, 'Nenhum limite precisou agir.'),
+      el('h3', {}, 'Trocas de ingrediente'), itens(t.trocas, 'Nenhuma: todos os materiais vieram como o acorde pede.'),
+      el('h3', {}, 'Conferência da máquina'),
+      t.violacoes.length ? el('ul', {}, ...agruparConferencias(t.violacoes).map(g => el('li', { class: 'nivel-' + g.nivel }, el('b', {}, NIVEL[g.nivel] || g.nivel),
+        ': ' + (g.nomes.length > 1 ? g.resto + ' — ' + g.nomes.join(', ') : (g.nomes[0] ? g.nomes[0] + ': ' : '') + g.resto))))
+        : el('p', { class: 'ok' }, '✔ Passou em todas as conferências da máquina (vidros, dose mínima, estoque, lote e IFRA).'),
+      el('h3', {}, 'Dosagem, vidro por vidro'), tabelaDeDosagem(t.job.itens),
+      el('div', { class: 'linha', style: 'margin-top:8px' }, copiar, copiado));
+  }
+
+  /* A mesma frase para vários ingredientes ("estoque não conferido" repetido 12 vezes) vira uma linha só, com os nomes depois dela. */
+  function agruparConferencias(violacoes) {
+    const grupos = new Map();
+    for (const v of violacoes) {
+      const i = v.mensagem.indexOf(': '), nome = i > 0 ? v.mensagem.slice(0, i) : '', resto = i > 0 ? v.mensagem.slice(i + 2) : v.mensagem;
+      const chave = v.nivel + '|' + v.codigo + '|' + resto;
+      if (!grupos.has(chave)) grupos.set(chave, { nivel: v.nivel, resto, nomes: [] });
+      if (nome) grupos.get(chave).nomes.push(nome);
+    }
+    return [...grupos.values()];
+  }
+
+  function tabelaDeDosagem(itens) {
+    const total = itens.reduce((s, i) => s + i.gramas, 0);
+    return el('table', { class: 'dosagem' }, el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Vidro nº'), el('th', { scope: 'col' }, 'Material'), el('th', { scope: 'col' }, 'Gramas'))),
+      el('tbody', {}, ...itens.map(i => el('tr', {}, el('td', {}, String(i.canal)), el('td', {}, i.material), el('td', {}, g3(i.gramas))))),
+      el('tfoot', {}, el('tr', {}, el('td', { colSpan: 2 }, 'Total dosado'), el('td', {}, g3(total)))));
+  }
+
+  /* Imprimir: a receita COMO ESTÁ AGORA (com as quantidades que a pessoa mexeu no ajuste fino). A conta é refeita pelo motor com `novos` vazio,
+   * para a folha trazer a dosagem por vidro mesmo com o modo técnico desligado; o que se imprime é o que o motor valida neste instante. */
+  async function imprimir(c, respostasDaReceita) {
+    const j = await api('/api/ajustar', { maquina, respostas: respostasDaReceita, itens: c.formula, novos: {}, massa_final_g: c.massa_final_g, nome: c.titulo, tecnico: true });
+    const x = j.candidato, frasco = ML_DO_FRASCO.has(x.massa_final_g) ? ML_DO_FRASCO.get(x.massa_final_g) + ' ml (' + fmt(x.massa_final_g) + ' g)' : fmt(x.massa_final_g) + ' g';
+    const soAromas = x.ingredientes.reduce((s, i) => s + i.gramas, 0);
+    $('#folha').replaceChildren(
+      el('h1', {}, x.titulo),
+      el('p', { class: 'selo ' + (x.valido ? 'pronta' : 'nao') }, x.valido ? 'PRONTA PARA FAZER' : 'NÃO VALIDADA: ' + x.motivos.join('; ')),
+      el('p', {}, 'Máquina: ' + db.maquinas.get(maquina).nome + ' · Frasco: ' + frasco + ' · Concentração: ' + fmt(x.concentracao_pct) + '% · ' + new Date().toLocaleDateString('pt-BR')),
+      ...(x.alergias.length ? [el('p', { class: 'selo nao' }, 'ALERGIA DECLARADA nesta receita: ' + x.alergias.join(', '))] : []),
+      el('h2', {}, 'Ingredientes'),
+      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Ingrediente'), el('th', {}, '% do concentrado'), el('th', {}, 'Gramas'))),
+        el('tbody', {}, ...x.ingredientes.map(i => el('tr', {}, el('td', {}, i.nome), el('td', {}, fmt(i.pct) + '%'), el('td', {}, g3(i.gramas))))),
+        el('tfoot', {}, el('tr', {}, el('td', {}, 'Total do concentrado'), el('td', {}, '100%'), el('td', {}, g3(soAromas))))),
+      el('h2', {}, 'Dosagem na máquina, vidro por vidro'), tabelaDeDosagem(x.tecnico.job.itens),
+      ...(x.cuidados.length ? [el('h2', {}, 'Cuidados com a mistura (' + x.cuidados.length + ')'),
+        el('ul', {}, ...x.cuidados.map(k => el('li', {}, el('b', {}, k.titulo + '. '), k.dica)))] : []),
+      el('h2', {}, 'Depois de fazer'), el('p', {}, 'Cheirou? Nota de 1 a 5: ______    Anotações: ______________________________________________'),
+      el('p', { class: 'rodape-folha' }, 'Calculado no aparelho, sem internet. As proporções são hipóteses de partida: cheire antes de usar.'));
+    window.print();
+  }
+
+  function botaoImprimir(obter, respostasDaReceita) {
+    const msg = el('span', { class: 'dica', role: 'status' });
+    return [el('button', { class: 'sec', onclick: async () => {
+      msg.textContent = '';
+      try { await imprimir(obter(), respostasDaReceita()); } catch (e) { msg.textContent = 'Não consegui preparar a impressão: ' + e.message; }
+    } }, 'Imprimir'), msg];
   }
 
   function resultado() {
@@ -272,7 +343,7 @@
     }
     t.replaceChildren(titulo, topo, fino, el('div', { class: 'card' }, el('h2', {}, 'Faça, cheire e conte como ficou'),
       el('div', { class: 'dica' }, 'Sua nota ajuda a melhorar a receita.'), el('div', { class: 'linha notas' }, ...bs), com,
-      el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: salvar }, 'Salvar receita')), msg),
+      el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: salvar }, 'Salvar receita'), ...botaoImprimir(() => atualC, () => respostas)), msg),
     el('div', { class: 'card' }, el('h2', {}, 'Quer mudar o estilo?'), ref),
     el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: resultado }, 'Voltar às sugestões')));
   }
@@ -315,7 +386,7 @@
       const ajustarQuantidades = () => { respostas = r.respostas; pai = r.id; ajustes = j.ajustes; aberta = null; $('#hist').replaceChildren(); marcarAba('novo'); feito(j.candidato); };
       $('#tela').replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: listar }, '← Minhas receitas')), cartao(j.candidato, null),
         el('div', { class: 'card' }, el('div', { class: 'estrelas' }, estrelas(r.nota)), el('p', { class: 'dica' }, 'Salva em ' + data(r.criada_em) + (r.comentario ? ': ' + r.comentario : '')),
-          el('div', { class: 'linha' }, el('button', { onclick: ajustarQuantidades }, 'Ajustar quantidades e salvar como nova versão'))),
+          el('div', { class: 'linha' }, el('button', { onclick: ajustarQuantidades }, 'Ajustar quantidades e salvar como nova versão'), ...botaoImprimir(() => j.candidato, () => r.respostas))),
         el('div', { class: 'card' }, el('h2', {}, 'Quer melhorar?'), el('div', { class: 'dica' }, 'Cada botão refaz a receita mantendo o perfume e mexendo só nisso.'),
           el('div', { class: 'linha' }, ...j.ajustes.map(a => el('button', { class: 'sec', onclick: () => melhorar(j, a) }, AJ[a] || a)))),
         el('div', { class: 'linha' }, bExcluir));

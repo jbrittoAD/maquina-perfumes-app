@@ -367,13 +367,15 @@
   }
 
   // ------------------------------------------------------------------------------------------------ composicao.py
-  const PESO_PROTAGONISTA = 0.50, PESO_APOIO = 0.30, PESO_BASE = 0.20;
-  const PESO_SEM_APOIO = 0.80;
-  const PESO_PREENCHIMENTO = 0.25;
+  // A camada de base ocupa PESO_BASE do concentrado (o perfil do momento muda: Brief.peso_base); o que sobra é o MIOLO, dividido assim:
+  const PESO_BASE = 0.20;
+  const PESO_PROTAGONISTA = 0.625, PESO_APOIO = 0.375;             // do miolo, quando há apoio (com a base padrão: 0,50 e 0,30 do concentrado)
+  const PESO_PREENCHIMENTO = 0.25;                                 // do miolo: famílias pedidas que o acorde não cobre
+  const PESO_NOTA = 0.10;                                          // do miolo: cada nota pedida que nenhum acorde usado cobre
   const DEFICIT_MIN = 0.15;
-  const PESO_SO_FAMILIAS = 0.80;
-  const PESO_NOTA = 0.10;
   const MAX_NOTAS_DIRETAS = 3;
+  const FAMILIAS_NO_PREENCHIMENTO = 3;                             // famílias em falta que o preenchimento cobre de saída; se os tetos seguram a concentração, abre mais
+  const CONCENTRACAO_MIN = 0.95;                                   // abaixo desta fração do pedido a concentração real é avisada (e o preenchimento se abre)
   const PONTUACAO_MIN = 0.35;
   const MAX_FRACAO_MATERIAL = 0.50;
   const BASE_FAMILIAS = [['musk', 0.50], ['amber', 0.30], ['woody', 0.20]];
@@ -392,13 +394,20 @@
   const ETANOL_CAS = '64-17-5';
 
   class Brief {
-    constructor({ familias = {}, notas = [], evitar_notas = [], evitar_materiais = [], concentracao_pct = 15.0, massa_final_g = 26.5, preferir_acordes = [] } = {}) {
-      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes });
+    constructor({ familias = {}, notas = [], evitar_notas = [], evitar_materiais = [], concentracao_pct = 15.0, massa_final_g = 26.5, preferir_acordes = [],
+      peso_base = null, base_familias = {}, evitar_familias = [] } = {}) {
+      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes, peso_base, base_familias, evitar_familias });
     }
     pesos() {
       const positivos = Object.entries(this.familias).filter(([, v]) => v > 0);
       const tot = soma(positivos.map(([, v]) => v));
       return tot ? Object.fromEntries(positivos.map(([f, v]) => [f, v / tot])) : {};
+    }
+    familias_da_base() {
+      const pares = Object.keys(this.base_familias).length
+        ? Object.entries(this.base_familias).sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        : BASE_FAMILIAS;
+      return pares.filter(([f]) => !this.evitar_familias.includes(f));
     }
   }
 
@@ -496,9 +505,9 @@
     return cands.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2])).map(c => c[2]);
   }
 
-  function _camada_base(db, inv, proibidos, rotacao = 0) {
+  function _camada_base(db, inv, proibidos, rotacao = 0, familias = BASE_FAMILIAS) {
     const out = [];
-    for (const [fam, peso] of BASE_FAMILIAS) {
+    for (const [fam, peso] of familias) {
       const lista = _melhores_da_familia(db, inv, proibidos, fam, db.populares, new Set(['base']));
       if (lista.length) out.push([lista[rotacao % lista.length], peso]);
     }
@@ -506,8 +515,8 @@
     return tot ? out.map(([m, p]) => [m, p / tot]) : [];
   }
 
-  function _preenchimento(db, inv, proibidos, deficit, rotacao = 0) {
-    const ordem = Object.entries(deficit).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  function _preenchimento(db, inv, proibidos, deficit, rotacao = 0, limite = FAMILIAS_NO_PREENCHIMENTO) {
+    const ordem = Object.entries(deficit).sort((a, b) => b[1] - a[1]).slice(0, limite);
     const tot = soma(ordem.map(([, d]) => d));
     const out = [];
     for (const [fam, d] of ordem) {
@@ -553,61 +562,65 @@
     return nums.length && maior <= 100 ? maior : null;
   }
 
+  // O teto MAIS ESTRITO do material: IFRA (FOLGA_IFRA do limite), uso típico ou fração máxima do concentrado. Em empate vale o primeiro, nessa ordem.
+  function _teto(db, m, brief, alvo_g) {
+    const tetos = [];
+    const [st, lim] = db.materiais.get(m).ifra;
+    if (st === 'limite') tetos.push([FOLGA_IFRA * lim / 100.0 * brief.massa_final_g, `IFRA: ${db.nome(m)} limitado a ${porcento(FOLGA_IFRA, 0)} do limite de ${fmt_g(lim)}%`]);
+    const uso = _uso_maximo(db, m);
+    if (uso !== null) tetos.push([uso / 100.0 * alvo_g, `${db.nome(m)} limitado ao uso típico máximo de ${fmt_g(uso)}% do concentrado`]);
+    tetos.push([MAX_FRACAO_MATERIAL * alvo_g, `${db.nome(m)} limitado a ${porcento(MAX_FRACAO_MATERIAL, 0)} do concentrado`]);
+    return tetos.reduce((melhor, t) => (t[0] < melhor[0] ? t : melhor));
+  }
+
   function _aplicar_tetos(db, itens, brief, alvo_g, solvente_id, travados, avisos) {
     for (let volta = 0; volta < 8; volta++) {
       let novos = false;
       for (const [m, g] of [...itens]) {
         if (m === solvente_id || travados.has(m)) continue;
-        const [st, lim] = db.materiais.get(m).ifra;
-        if (st === 'limite') {
-          const teto = FOLGA_IFRA * lim / 100.0 * brief.massa_final_g;
-          if (g > teto + 1e-12) {
-            avisos.push(`IFRA: ${db.nome(m)} limitado a ${porcento(FOLGA_IFRA, 0)} do limite de ${fmt_g(lim)}%`);
-            itens.set(m, teto); novos = true; travados.add(m);
-            continue;
-          }
-        }
-        const uso = _uso_maximo(db, m);
-        if (uso !== null && g > uso / 100.0 * alvo_g + 1e-12) {
-          avisos.push(`${db.nome(m)} limitado ao uso típico máximo de ${fmt_g(uso)}% do concentrado`);
-          itens.set(m, uso / 100.0 * alvo_g); novos = true; travados.add(m);
-          continue;
-        }
-        if (g > MAX_FRACAO_MATERIAL * alvo_g + 1e-12) {
-          avisos.push(`${db.nome(m)} limitado a ${porcento(MAX_FRACAO_MATERIAL, 0)} do concentrado`);
-          itens.set(m, MAX_FRACAO_MATERIAL * alvo_g); novos = true; travados.add(m);
+        const [teto, aviso] = _teto(db, m, brief, alvo_g);
+        if (g > teto + 1e-12) {
+          avisos.push(aviso);
+          itens.set(m, teto); novos = true; travados.add(m);
         }
       }
       if (!novos || !_renormalizar(itens, travados, alvo_g, solvente_id)) break;
     }
   }
 
-  function _corrigir(db, maquina_id, itens, brief, alvo_g, solvente_id, avisos) {
-    const travados = new Set();
+  function _tirar_abaixo_da_dose(db, maquina_id, itens, massa_final_g, solvente_id, avisos) {
     const maq = db.maquinas.get(maquina_id);
     const canal_mat = new Map(maq.canais.map(c => [c.canal, c.material_id]));
+    const t = traduzir_itens(db, new Map(itens), massa_final_g, maquina_id);
+    const abaixo = t.itens.filter(i => i.gramas < maq.dose_minima_g && canal_mat.get(i.canal) !== solvente_id).map(i => canal_mat.get(i.canal));
+    for (const m of abaixo) {
+      avisos.push(`${db.nome(m)} removido: dose abaixo do mínimo da máquina (${fixo(maq.dose_minima_g * 1000, 0)} mg)`);
+      itens.delete(m);
+    }
+    return abaixo.length > 0;
+  }
+
+  function _corrigir(db, maquina_id, itens, brief, alvo_g, solvente_id, avisos) {
+    const travados = new Set();
     for (let volta = 0; volta < VOLTAS_DA_CORRECAO; volta++) {
       _aplicar_tetos(db, itens, brief, alvo_g, solvente_id, travados, avisos);
-      const t = traduzir_itens(db, new Map(itens), brief.massa_final_g, maquina_id);
-      const abaixo = t.itens.filter(i => i.gramas < maq.dose_minima_g && canal_mat.get(i.canal) !== solvente_id).map(i => canal_mat.get(i.canal));
-      if (!abaixo.length) return;
-      for (const m of abaixo) {
-        avisos.push(`${db.nome(m)} removido: dose abaixo do mínimo da máquina (${fixo(maq.dose_minima_g * 1000, 0)} mg)`);
-        itens.delete(m);
-      }
+      if (!_tirar_abaixo_da_dose(db, maquina_id, itens, brief.massa_final_g, solvente_id, avisos)) return;
       _renormalizar(itens, travados, alvo_g, solvente_id);
     }
   }
 
   function _montar(db, maquina_id, brief, prot, apoio, base, preench, solvente_id, notas = []) {
     const conc_g = brief.massa_final_g * brief.concentracao_pct / 100.0;
-    let pesos, p_preench, p_base;
-    if (prot === null) {                                    // só famílias + base
-      pesos = []; p_preench = PESO_SO_FAMILIAS - PESO_NOTA * notas.length; p_base = 1.0 - PESO_SO_FAMILIAS;
+    const p_base = brief.peso_base === null ? PESO_BASE : brief.peso_base;   // a base é uma parcela FIXA: nota e preenchimento não a encolhem
+    const miolo = 1.0 - p_base;                                              // o resto do concentrado: protagonista, apoio, preenchimento, notas
+    let escala = 1.0 - PESO_NOTA * notas.length;                             // as notas tiram a parte delas do miolo
+    let pesos, p_preench;
+    if (prot === null) {                                                     // só famílias + base
+      pesos = []; p_preench = miolo * escala;
     } else {
-      const escala = 1.0 - (preench.length ? PESO_PREENCHIMENTO : 0.0) - PESO_NOTA * notas.length;
-      pesos = [[prot, (apoio ? PESO_PROTAGONISTA : PESO_SEM_APOIO) * escala]].concat(apoio ? [[apoio, PESO_APOIO * escala]] : []);
-      p_preench = PESO_PREENCHIMENTO; p_base = PESO_BASE * escala;
+      escala -= preench.length ? PESO_PREENCHIMENTO : 0.0;                   // o preenchimento também
+      pesos = [[prot, miolo * (apoio ? PESO_PROTAGONISTA : 1.0) * escala]].concat(apoio ? [[apoio, miolo * PESO_APOIO * escala]] : []);
+      p_preench = miolo * PESO_PREENCHIMENTO;
     }
     let itens = new Map();
     const somar = (m, g) => itens.set(m, (itens.has(m) ? itens.get(m) : 0.0) + g);
@@ -615,7 +628,7 @@
     for (const [ac, peso] of pesos) for (const [m, f] of ac.materiais) somar(m, conc_g * peso * f);
     for (const [m, p] of base) somar(m, conc_g * p_base * p);
     for (const [m, p] of preench) somar(m, conc_g * p_preench * p);
-    for (const [m, p] of notas) somar(m, conc_g * PESO_NOTA * p);
+    for (const [m, p] of notas) somar(m, conc_g * miolo * PESO_NOTA * p);
     _corrigir(db, maquina_id, itens, brief, conc_g, solvente_id, avisos);
     if (solvente_id === null) {
       avisos.push('a máquina não tem canal de solvente: só o concentrado é dosado');
@@ -628,16 +641,48 @@
     if (dispensado > brief.massa_final_g * 0.98) {
       const k = brief.massa_final_g * 0.98 / dispensado;
       itens = new Map([...aromaticos].map(([m, g]) => [m, g * k]));
+      for (let volta = 0; volta < VOLTAS_DA_CORRECAO; volta++) {            // a redução pode levar alguém para baixo da dose mínima
+        if (!_tirar_abaixo_da_dose(db, maquina_id, itens, brief.massa_final_g, solvente_id, avisos)) break;
+      }
       avisos.push(`concentração reduzida para ${porcento(soma(itens.values()) / brief.massa_final_g, 1)}: os vidros diluídos ocupam o volume`);
       aromaticos = new Map(itens);
       dispensado = dispensar(aromaticos);
     }
     itens.set(solvente_id, Math.max(brief.massa_final_g - dispensado, 0.0));
-    const real = soma([...itens].filter(([m]) => m !== solvente_id).map(([, g]) => g)) / brief.massa_final_g * 100;
-    if (real < brief.concentracao_pct * 0.95) {
+    const real = _concentracao_real(itens, solvente_id, brief.massa_final_g);
+    if (real < brief.concentracao_pct * CONCENTRACAO_MIN) {
       avisos.push(`concentração real de ${fixo(real, 1)}% (pedido ${fmt_g(brief.concentracao_pct)}%): os tetos de uso e de IFRA seguraram os materiais`);
     }
     return [itens, avisos];
+  }
+
+  function _concentracao_real(itens, solvente_id, massa_final_g) {
+    return soma([...itens].filter(([m]) => m !== solvente_id).map(([, g]) => g)) / massa_final_g * 100;
+  }
+
+  function _traduzir_e_validar(db, maquina_id, itens, massa_final_g) {
+    const traducao = traduzir_itens(db, itens, massa_final_g, maquina_id);
+    return [traducao, validar(db, maquina_id, { itens: traducao.itens, massa_final_g })];
+  }
+
+  // Monta com o preenchimento das FAMILIAS_NO_PREENCHIMENTO famílias mais em falta. Se a receita não fecha (não valida, ou os tetos seguram o
+  // concentrado abaixo do que o pedido aceita), abre o preenchimento para mais uma família, e assim por diante. Vale a tentativa válida que chegou
+  // mais perto do pedido (em empate, a mais enxuta). Devolve [preenchimento, itens, avisos, tradução, resultado].
+  function _montar_abrindo_familias(db, maquina_id, brief, prot, apoio, base, deficit, inv, proibidos, rotacao, solvente_id, notas) {
+    let melhor = null;
+    const ate = Math.max(Object.keys(deficit).length, FAMILIAS_NO_PREENCHIMENTO);
+    for (let limite = FAMILIAS_NO_PREENCHIMENTO; limite <= ate; limite++) {
+      const preench = _preenchimento(db, inv, proibidos, deficit, rotacao, limite);
+      const [itens, avisos] = _montar(db, maquina_id, brief, prot, apoio, base, preench, solvente_id, notas);
+      const [traducao, resultado] = _traduzir_e_validar(db, maquina_id, itens, brief.massa_final_g);
+      const valido = resultado.ok && traducao.completa;
+      const real = _concentracao_real(itens, solvente_id, brief.massa_final_g);
+      if (melhor === null || (valido && !melhor.valido) || (valido === melhor.valido && real > melhor.real + 1e-9)) {
+        melhor = { valido, real, preench, itens, avisos, traducao, resultado };
+      }
+      if (valido && real >= brief.concentracao_pct * CONCENTRACAO_MIN) break;
+    }
+    return [melhor.preench, melhor.itens, melhor.avisos, melhor.traducao, melhor.resultado];
   }
 
   function _deficit(pesos, ...acordes) {
@@ -670,18 +715,16 @@
       const prot = livres.find(a => ja_usados.every(c => _jaccard(a, c) < 0.8)) || null;
       if (prot === null && (k > 0 || sem_pedido)) break;
       if (prot === null) {                                  // nenhum acorde combina: compõe por famílias
-        const preench = _preenchimento(db, inv, proibidos, pesos, k);
-        const base = _camada_base(db, inv, proibidos, k);
+        const base = _camada_base(db, inv, proibidos, k, brief.familias_da_base());
         const [nd, sem_nota] = _notas_diretas(db, inv, proibidos, brief.notas, new Set());
-        const [itens, avisos] = _montar(db, maquina_id, brief, null, null, base, preench, solvente_id, nd);
+        const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief, null, null, base, pesos, inv, proibidos, k, solvente_id, nd);
         for (const nota of sem_nota) avisos.push(`a nota '${nota}' que você pediu não tem como ser feita nesta máquina`);
         const nome = 'Composição por famílias: ' + Object.keys(pesos).sort((a, b) => pesos[b] - pesos[a]).slice(0, 3).join(' + ');
         const c = new Candidato({ nome, protagonista_id: 0, itens, massa_final_g: brief.massa_final_g, avisos });
         c.explicacao = ['Nenhum acorde do dicionário combina com o pedido nesta máquina; montado por famílias',
           'Famílias: ' + preench.map(([m]) => db.nome(m)).join(', ')];
         if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
-        c.traducao = traduzir_itens(db, itens, brief.massa_final_g, maquina_id);
-        c.resultado = validar(db, maquina_id, { itens: c.traducao.itens, massa_final_g: brief.massa_final_g });
+        c.traducao = traducao; c.resultado = resultado;
         saida.push(c);
         continue;
       }
@@ -699,13 +742,13 @@
       }
       const apoio = apoios.length ? apoios[0] : null;
       const deficit = _deficit(pesos, ...[prot, apoio].filter(Boolean));
-      const preench = soma(Object.values(deficit)) >= DEFICIT_MIN ? _preenchimento(db, inv, proibidos, deficit, k) : [];
-      const base = _camada_base(db, inv, proibidos, k);
+      const base = _camada_base(db, inv, proibidos, k, brief.familias_da_base());
       usados.add(prot.id);
       if (apoio) usados.add(apoio.id);
       const cobertas = new Set([prot, apoio].filter(a => a && a.nota).map(a => a.nota));
       const [nd, sem_nota] = _notas_diretas(db, inv, proibidos, brief.notas, cobertas);
-      const [itens, avisos] = _montar(db, maquina_id, brief, prot, apoio, base, preench, solvente_id, nd);
+      const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief, prot, apoio, base,
+        soma(Object.values(deficit)) >= DEFICIT_MIN ? deficit : {}, inv, proibidos, k, solvente_id, nd);
       for (const nota of sem_nota) avisos.push(`a nota '${nota}' que você pediu não tem como ser feita nesta máquina`);
       const c = new Candidato({ nome: prot.nome, protagonista_id: prot.id, itens, massa_final_g: brief.massa_final_g, avisos, pontuacao: prot.pontuacao });
       c.trocas = prot.trocas.concat(apoio ? apoio.trocas : []);
@@ -715,8 +758,7 @@
       if (preench.length) c.explicacao.push('Preenchimento para o que você pediu: ' + preench.map(([m]) => db.nome(m)).join(', '));
       if (nd.length) c.explicacao.push('Notas pedidas: ' + nd.map(([m]) => db.nome(m)).join(', '));
       if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
-      c.traducao = traduzir_itens(db, itens, brief.massa_final_g, maquina_id);
-      c.resultado = validar(db, maquina_id, { itens: c.traducao.itens, massa_final_g: brief.massa_final_g });
+      c.traducao = traducao; c.resultado = resultado;
       saida.push(c);
     }
     return saida;
@@ -724,10 +766,13 @@
 
   function refinar(db, maquina_id, candidato, brief, ajuste) {
     if (!Object.hasOwn(AJUSTES, ajuste)) throw new ErroDeUso(`ajuste desconhecido: ${ajuste} (válidos: ${Object.keys(AJUSTES).join(', ')})`);
-    const fam = { ...brief.familias };
-    for (const [f, d] of Object.entries(AJUSTES[ajuste])) fam[f] = Math.max((fam[f] === undefined ? 0.0 : fam[f]) + d, 0.0);
-    const novo = new Brief({ familias: fam, notas: brief.notas, evitar_notas: brief.evitar_notas, evitar_materiais: brief.evitar_materiais,
-      concentracao_pct: brief.concentracao_pct, massa_final_g: brief.massa_final_g, preferir_acordes: [candidato.protagonista_id] });
+    const fam = { ...brief.familias }, afastadas = [...brief.evitar_familias];
+    for (const [f, d] of Object.entries(AJUSTES[ajuste])) {
+      const liquido = (fam[f] === undefined ? 0.0 : fam[f]) + d;
+      fam[f] = Math.max(liquido, 0.0);
+      if (d < 0 && liquido <= 0 && !afastadas.includes(f)) afastadas.push(f);   // tirou a família de vez: a base também deixa de levá-la
+    }
+    const novo = new Brief({ ...brief, familias: fam, preferir_acordes: [candidato.protagonista_id], evitar_familias: afastadas });
     const r = compor(db, maquina_id, novo, 1);
     return r.length ? r[0] : null;
   }
@@ -820,6 +865,7 @@
     let notas = [], evitar_notas = [];
     const cas = [];
     let conc = PADRAO.concentracao_pct, massa = PADRAO.massa_final_g;
+    let peso_base = null, base_familias = {};
     for (const [no, escolhidas] of feitas) {
       const por_id = new Map(no.opcoes.map(o => [o.id, o]));
       for (const e of escolhidas) {
@@ -830,6 +876,9 @@
         cas.push(...(ef.evitar_cas || []));
         if (ef.concentracao_pct !== undefined) conc = ef.concentracao_pct;
         if (ef.massa_final_g !== undefined) massa = ef.massa_final_g;
+        const perfil = ef.perfil || {};
+        if (perfil.base !== undefined) peso_base = perfil.base;
+        if (perfil.base_familias !== undefined) base_familias = perfil.base_familias;
       }
     }
     notas = [...new Set(notas)];
@@ -840,7 +889,8 @@
     const evitar_materiais = [...new Set(cas.flatMap(c => db.por_cas.get(c) || []))].sort((a, b) => a - b);
     return new Brief({ familias: Object.fromEntries(Object.entries(fam).filter(([, w]) => w > 0)), notas,
       evitar_notas: [...new Set(evitar_notas)], evitar_materiais,
-      concentracao_pct: Math.min(conc, CONCENTRACAO_MAX), massa_final_g: Math.min(massa, cap.lote_max_g) });
+      concentracao_pct: Math.min(conc, CONCENTRACAO_MAX), massa_final_g: Math.min(massa, cap.lote_max_g),
+      peso_base, base_familias: { ...base_familias }, evitar_familias: Object.entries(fam).filter(([, w]) => w < 0).map(([f]) => f) });
   }
 
   function caminho(respostas, q, cap) {
@@ -975,6 +1025,14 @@
     return out;
   }
 
+  // 'Terpenos de Laranja (terpenos de óleo de laranja)' -> 'Terpenos de Laranja': sai o que vem depois de ' - ' e de ' CAS'; se ainda passa do limite,
+  // sai também o parêntese do fim (o apelido do material), em vez de cortar no meio da palavra.
+  function nome_curto(nome, limite) {
+    let n = nome.split(' - ')[0].split(' CAS')[0].trim();
+    if (n.length > limite) n = n.replace(/\s*\([^()]*\)?\s*$/, '').trim() || n;
+    return n.slice(0, limite);
+  }
+
   function descrever(db, maquina_id, c, mostrar_tecnico = false, evitar = []) {
     const aro = new Map([...c.itens].filter(([m]) => db.materiais.get(m).tipo_material !== 'solvent'));
     const tot = soma(aro.values());
@@ -984,7 +1042,7 @@
     const pf = perfil(db, c.itens);
     const titulo = prot ? nome_amigavel(db, prot) + (apoio ? ` com ${nome_amigavel(db, apoio).toLowerCase()}` : '')
       : pf.length ? 'Composição de ' + pf.slice(0, 2).map(([f]) => f.toLowerCase()).join(' e ') : c.nome;
-    const nome_do_ingrediente = m => db.nome(m).split(' - ')[0].split(' CAS')[0].slice(0, 46);
+    const nome_do_ingrediente = m => nome_curto(db.nome(m), 46);
     const ingredientes = [...aro].sort((a, b) => pyround(b[1], 4) - pyround(a[1], 4) || a[0] - b[0]).map(([m, g]) => ({ nome: nome_do_ingrediente(m), gramas: pyround(g, 3), pct: pyround(100.0 * g / tot, 1) }));
     const avisos_quimicos = cuidados(db, c.itens).map(x => ({ ...x, materiais: x.materiais.map(nome_do_ingrediente) }));
     const alergias = [...evitar].sort((a, b) => a - b).filter(m => aro.has(m)).map(nome_do_ingrediente);
@@ -1004,7 +1062,7 @@
       out.tecnico = {
         avisos: c.avisos, trocas: c.trocas, explicacao: c.explicacao,
         violacoes: (c.resultado ? c.resultado.violacoes : []).map(v => ({ codigo: v.codigo, nivel: v.nivel, mensagem: v.mensagem })),
-        job: { nome: titulo, itens: c.traducao.itens.map(i => ({ canal: i.canal, material: nome_do_canal(i).slice(0, 40), gramas: i.gramas })) },
+        job: { nome: titulo, itens: c.traducao.itens.map(i => ({ canal: i.canal, material: nome_curto(nome_do_canal(i), 40), gramas: i.gramas })) },
       };
     }
     return out;
@@ -1285,7 +1343,7 @@
 
   return {
     Banco, ErroDeUso, Brief, criar_app, ID_PROPRIA,         // o que o app usa
-    inventario, instanciar, parecidos_em, validar, traduzir_itens, compor, refinar, descrever, cuidados, capacidades,   // o que os testes de paridade chamam direto
+    inventario, instanciar, parecidos_em, validar, traduzir_itens, compor, refinar, descrever, cuidados, capacidades, montar_brief,   // o que os testes de paridade chamam direto
     numeros: { soma, fixo, pyround, porcento, fmt_g },
   };
 });
