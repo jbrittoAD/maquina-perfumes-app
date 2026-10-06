@@ -219,11 +219,11 @@
     window.print();
   }
 
-  function botaoImprimir(obter, respostasDaReceita) {
+  function botaoImprimir(obter, respostasDaReceita, antes = async () => {}) {
     const msg = el('span', { class: 'dica', role: 'status' });
     return [el('button', { class: 'sec', onclick: async () => {
       msg.textContent = '';
-      try { await imprimir(obter(), respostasDaReceita()); } catch (e) { msg.textContent = 'Não consegui preparar a impressão: ' + e.message; }
+      try { await antes(); await imprimir(obter(), respostasDaReceita()); } catch (e) { msg.textContent = 'Não consegui preparar a impressão: ' + e.message; }
     } }, 'Imprimir'), msg];
   }
 
@@ -238,7 +238,7 @@
   /* Uma barra por ingrediente, de zero até o limite da IFRA, o estoque do vidro ou o que cabe no frasco (o que vier primeiro).
    * O etanol completa o resto. Tudo é calculado pelo motor (/api/ajustar); aqui só se desenha e se pede de novo a cada mudança. */
   function painelAjuste(c, aoMudar) {
-    let atual = c.formula, lim = null, serie = 0, espera = null, evitados = new Set();      // evitados: ids dos materiais a que a pessoa declarou alergia
+    let atual = c.formula, lim = null, serie = 0, espera = null, pendente = null, emVoo = Promise.resolve(), evitados = new Set();      // evitados: ids dos materiais a que a pessoa declarou alergia
     const linhas = new Map(), lista = el('div'), resumo = el('p', { class: 'dica ajuste-resumo' }), problemas = el('div', { class: 'erro' }), avisos = el('div', { class: 'dica' });
     const seletor = el('select', { 'aria-label': 'Ingrediente para acrescentar', onchange: () => { acrescentar(); seletor.value = ''; } });
     const encaixar = (v, x) => (v < x.min_dose_g / 2 ? 0 : v < x.min_dose_g ? x.min_dose_g : v);      // abaixo da dose mínima a máquina não dosa: zero ou o mínimo
@@ -249,8 +249,9 @@
       const row = el('div', { class: 'ajuste-linha' }, el('div', { class: 'linha' }, el('b', { style: 'flex:1' }, x.nome), valor), barra, dica);
       barra.oninput = () => {
         valor.textContent = g3(barra.valueAsNumber) + ' g';
+        pendente = { [x.material_id]: encaixar(barra.valueAsNumber, linhas.get(x.material_id).x) };
         clearTimeout(espera);
-        espera = setTimeout(() => pedir({ [x.material_id]: encaixar(barra.valueAsNumber, linhas.get(x.material_id).x) }), 40);
+        espera = setTimeout(enviar, 40);
       };
       linhas.set(x.material_id, { row, barra, valor, dica, x });
       lista.append(row);
@@ -281,6 +282,14 @@
       resumo.textContent = 'Etanol: ' + g3(lim.folga_g) + ' g (completa o frasco de ' + fmt(lim.massa_final_g) + ' g)';
     }
 
+    /* Manda ao motor o último pedido de barra que ainda não foi e espera a resposta. Salvar e Imprimir passam por aqui: nunca levam a receita de antes do ajuste. */
+    function enviar() {
+      clearTimeout(espera);
+      espera = null;
+      if (pendente) { const novos = pendente; pendente = null; emVoo = pedir(novos); }
+      return emVoo;
+    }
+
     async function pedir(novos) {
       const minha = ++serie;
       try {
@@ -304,9 +313,11 @@
       linhas.get(x.material_id).barra.focus();
     }
 
-    pedir({});
-    return el('div', {}, el('p', { class: 'dica' }, 'Cada barra vai de zero até o limite da IFRA ou o que cabe no frasco, o que vier primeiro. O etanol completa o resto.'),
+    emVoo = pedir({});
+    const raiz = el('div', {}, el('p', { class: 'dica' }, 'Cada barra vai de zero até o limite da IFRA ou o que cabe no frasco, o que vier primeiro. O etanol completa o resto.'),
       resumo, lista, el('div', { class: 'linha', style: 'margin-top:8px' }, seletor), problemas, avisos);
+    raiz.aguardar = enviar;
+    return raiz;
   }
 
   function feito(c) {
@@ -325,13 +336,17 @@
       } catch (e) { msg.textContent = e.message; }
     } }, AJ[a] || a)));
     const fino = el('details', { class: 'card' }, el('summary', {}, 'Ajuste fino das quantidades (opcional)'));
+    let painel = null;
     fino.addEventListener('toggle', () => {                                // só monta o painel quando a pessoa abre
       if (fino.open && !fino.dataset.pronto) {
         fino.dataset.pronto = '1';
-        fino.append(painelAjuste(c, nc => { atualC = nc; titulo.textContent = nc.titulo; topo.replaceChildren(cartao(nc, null)); }));
+        painel = painelAjuste(c, nc => { atualC = nc; titulo.textContent = nc.titulo; topo.replaceChildren(cartao(nc, null)); });
+        fino.append(painel);
       }
     });
+    const aguardarAjuste = async () => { if (painel) await painel.aguardar(); };
     async function salvar() {
+      await aguardarAjuste();
       if (!nota) { msg.textContent = 'Escolha uma nota de 1 a 5.'; return; }
       try {
         const j = await api('/api/salvar', { maquina, respostas, nome: atualC.titulo, itens: atualC.formula, massa_final_g: atualC.massa_final_g,
@@ -343,7 +358,7 @@
     }
     t.replaceChildren(titulo, topo, fino, el('div', { class: 'card' }, el('h2', {}, 'Faça, cheire e conte como ficou'),
       el('div', { class: 'dica' }, 'Sua nota ajuda a melhorar a receita.'), el('div', { class: 'linha notas' }, ...bs), com,
-      el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: salvar }, 'Salvar receita'), ...botaoImprimir(() => atualC, () => respostas)), msg),
+      el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: salvar }, 'Salvar receita'), ...botaoImprimir(() => atualC, () => respostas, aguardarAjuste)), msg),
     el('div', { class: 'card' }, el('h2', {}, 'Quer mudar o estilo?'), ref),
     el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: resultado }, 'Voltar às sugestões')));
   }

@@ -515,16 +515,17 @@
     return tot ? out.map(([m, p]) => [m, p / tot]) : [];
   }
 
+  // Só contam as famílias que a máquina tem: a que não tem material nenhum não leva a parcela dela embora, o resto divide o total.
   function _preenchimento(db, inv, proibidos, deficit, rotacao = 0, limite = FAMILIAS_NO_PREENCHIMENTO) {
-    const ordem = Object.entries(deficit).sort((a, b) => b[1] - a[1]).slice(0, limite);
-    const tot = soma(ordem.map(([, d]) => d));
-    const out = [];
-    for (const [fam, d] of ordem) {
+    const usaveis = [];
+    for (const [fam, d] of Object.entries(deficit).sort((a, b) => b[1] - a[1])) {
+      if (usaveis.length === limite) break;
       const todos = _melhores_da_familia(db, inv, proibidos, fam, db.populares);
       const lista = todos.slice(rotacao).concat(todos.slice(0, rotacao)).slice(0, 2);
-      for (const m of lista) out.push([m, d / tot / lista.length]);
+      if (lista.length) usaveis.push([d, lista]);
     }
-    return out;
+    const tot = soma(usaveis.map(([d]) => d));
+    return usaveis.flatMap(([d, lista]) => lista.map(m => [m, d / tot / lista.length]));
   }
 
   function _notas_diretas(db, inv, proibidos, slugs, cobertas) {
@@ -1025,12 +1026,18 @@
     return out;
   }
 
-  // 'Terpenos de Laranja (terpenos de óleo de laranja)' -> 'Terpenos de Laranja': sai o que vem depois de ' - ' e de ' CAS'; se ainda passa do limite,
-  // sai também o parêntese do fim (o apelido do material), em vez de cortar no meio da palavra.
+  // 'Terpenos de Laranja (terpenos de óleo de laranja)' -> 'Terpenos de Laranja': sai o que vem depois de ' - ', ' -- ' e de ' CAS'; se ainda passa do limite,
+  // sai o parêntese do fim (o apelido do material) e, só então, o corte é na última palavra inteira, nunca no meio dela.
+  const DEPOIS_DO_NOME = /\s+(?:--|[-–—|])\s+|\s+CAS\b/;
   function nome_curto(nome, limite) {
-    let n = nome.split(' - ')[0].split(' CAS')[0].trim();
+    let n = nome.split(DEPOIS_DO_NOME)[0].trim();
     if (n.length > limite) n = n.replace(/\s*\([^()]*\)?\s*$/, '').trim() || n;
-    return n.slice(0, limite);
+    if (n.length > limite) {
+      let corte = n.slice(0, limite);
+      if (n[limite] !== ' ' && corte.includes(' ')) corte = corte.slice(0, corte.lastIndexOf(' '));       // a palavra seguinte começa depois do limite? então nada se parte
+      n = corte.trimEnd();
+    }
+    return n;
   }
 
   function descrever(db, maquina_id, c, mostrar_tecnico = false, evitar = []) {
@@ -1343,7 +1350,7 @@
 
   return {
     Banco, ErroDeUso, Brief, criar_app, ID_PROPRIA,         // o que o app usa
-    inventario, instanciar, parecidos_em, validar, traduzir_itens, compor, refinar, descrever, cuidados, capacidades, montar_brief,   // o que os testes de paridade chamam direto
+    inventario, instanciar, parecidos_em, validar, traduzir_itens, compor, refinar, descrever, cuidados, capacidades, montar_brief, nome_curto,   // o que os testes de paridade chamam direto
     numeros: { soma, fixo, pyround, porcento, fmt_g },
   };
 });
