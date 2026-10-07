@@ -564,6 +564,7 @@
     $('#aba-novo').onclick = () => { aberta = null; pai = null; passo(); };
     $('#aba-receitas').onclick = listar;
     $('#aba-mapa').onclick = telaMapa;
+    $('#aba-acordes').onclick = () => { location.href = 'catalogo.html'; };   // o catálogo completo é uma página própria, ao lado do app
     $('#rodape').textContent = 'Para instalar no celular: menu do navegador → Adicionar à tela inicial. Dados ' + db.versao + '.';
     servico();
     passo();

@@ -23,7 +23,8 @@ button{font:inherit;border:0;border-radius:10px;padding:12px 18px;background:var
 button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}button:disabled{opacity:.45;cursor:default}
 select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dica{color:var(--mut);font-size:13px;margin:6px 0}
-.abas{display:flex;gap:8px;margin:4px 0 8px}.abas button{flex:1}.abas button.sec{border-color:var(--bd)}
+.abas{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px}.abas button{flex:1;min-width:0}.abas button.sec{border-color:var(--bd)}
+@media (max-width:480px){.abas button{flex:1 1 calc(50% - 4px)}}
 .hist{font-size:14px;color:var(--mut)}.hist button{padding:2px 8px;min-height:0;font-size:12px;margin-left:6px}
 .barra{height:10px;border-radius:5px;background:var(--ac2);margin:3px 0 8px;overflow:hidden}.barra i{display:block;height:100%;background:var(--ac)}
 .fam{display:flex;justify-content:space-between;font-size:14px}table{width:100%;border-collapse:collapse;font-size:14px}td{padding:4px 0;border-bottom:1px solid var(--bd)}td:last-child{text-align:right;white-space:nowrap}
@@ -62,7 +63,7 @@ body{background:#fff}main{display:none}
 <h1>Máquina de Perfumes</h1>
 <p class="sub">Responda algumas perguntas e eu monto o seu perfume. Sem internet, sem IA: tudo é calculado aqui no seu aparelho.</p>
 <div id="aviso" class="banner" hidden></div>
-<nav class="abas"><button id="aba-novo">Novo perfume</button><button id="aba-receitas" class="sec">Minhas receitas</button><button id="aba-mapa" class="sec">Minha máquina</button></nav>
+<nav class="abas"><button id="aba-novo">Novo perfume</button><button id="aba-receitas" class="sec">Minhas receitas</button><button id="aba-mapa" class="sec">Minha máquina</button><button id="aba-acordes" class="sec">Acordes</button></nav>
 <div class="linha" id="topo"><label class="dica">Máquina <select id="maq"></select></label><label class="dica"><input type="checkbox" id="tec"> modo técnico</label></div>
 <div id="hist" class="hist"></div>
 <div id="tela"></div>
