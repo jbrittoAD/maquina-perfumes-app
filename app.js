@@ -565,9 +565,11 @@
     $('#aba-receitas').onclick = listar;
     $('#aba-mapa').onclick = telaMapa;
     $('#aba-acordes').onclick = () => { location.href = 'catalogo.html'; };   // o catálogo completo é uma página própria, ao lado do app
+    $('#aba-escadas').onclick = () => { location.href = 'escadas.html'; };    // a escada de gotas também (mesma navegação do catálogo)
     $('#rodape').textContent = 'Para instalar no celular: menu do navegador → Adicionar à tela inicial. Dados ' + db.versao + '.';
     servico();
-    passo();
+    const alvo = new URLSearchParams(location.search).get('aba');            // o catálogo/escadas voltam pelo link (index.html?aba=receitas|mapa)
+    if (alvo === 'receitas') listar(); else if (alvo === 'mapa') telaMapa(); else passo();
   }
 
   iniciar();
