@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#8a5a44">
+<link rel="icon" href="icone-192.png">
 <title>Acordes · Máquina de Perfumes</title>
 <style>
 :root{--bg:#faf8f5;--card:#fff;--tx:#2a2420;--mut:#7a6f66;--ac:#8a5a44;--ac2:#f1e6dd;--bd:#e4dad0;--ok:#3d7a4f;--er:#a33;--a:#3d7a4f;--b:#9a7a1f;--c:#a33;--tr:#9a6a1f}
@@ -345,7 +346,28 @@ window.DADOS = {"versao":3,"dose_min_g":0.02,"paleta":61,"formas":["leve","centr
     $('#inviaveis > summary').textContent = 'Notas que esta paleta não cobre (' + D.inviaveis.length + ') — por isso não há acorde delas aqui';
     $('#inviaveis > ul').replaceChildren(...D.inviaveis.map(f => el('li', {}, el('b', {}, f.nome), ': ' + f.motivo)));
   }
+  // ---- chegou do app com um acorde na mão (?acorde=ID, o link do nariz digital): limpa o que o esconderia, seleciona, abre os detalhes e rola até ele
+  const alvo = new URLSearchParams(location.search).get('acorde');
+  if (alvo && porId.has(alvo)) {
+    for (const id of ['#busca', '#faceta', '#forma', '#variante', '#com', '#sem']) $(id).value = '';
+    document.querySelectorAll('#tiers input').forEach(i => { i.checked = true; });
+    $('#sem-cuidado').checked = false;
+    $('#sem-alergeno').checked = false;
+    $('#modo-maquina').value = '';
+    selecionados.add(alvo);
+    lembrar.gravar([...selecionados]);
+    abertos.add(alvo);
+  }
   refiltrar();
+  if (alvo && porId.has(alvo)) {
+    const i = filtrados.findIndex(a => a.id === alvo);
+    pagina = Math.max(0, Math.floor(i / POR_PAGINA));
+    desenhar();
+    requestAnimationFrame(() => {
+      const card = document.querySelectorAll('#lista .acorde')[i - pagina * POR_PAGINA];
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 })();
 </script>
 </body>

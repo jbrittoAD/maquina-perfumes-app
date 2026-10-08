@@ -4,6 +4,7 @@
   const $ = s => document.querySelector(s);
   const NEUTRAS = ['tanto_faz', 'nenhum', 'nenhuma'];
   const CHAVE_RECEITAS = 'perfume.receitas.v1', CHAVE_MAQUINA = 'perfume.maquina', CHAVE_PROPRIA = 'perfume.minha_maquina.v1';
+  const CHAVE_ESP = 'perfume.especialista.v1';                 // a última recomendação do nariz digital
   const PESADAS = new Set(['/api/compor', '/api/refinar']);       // dão um respiro para a tela pintar "Montando…" antes da conta
   const AJ = { mais_fresco: 'Mais fresco', menos_fresco: 'Menos fresco', mais_doce: 'Mais doce', menos_doce: 'Menos doce', mais_floral: 'Mais floral',
     mais_amadeirado: 'Mais amadeirado', mais_apimentado: 'Mais apimentado' };
@@ -19,6 +20,8 @@
   const estrelas = n => '★'.repeat(n) + '☆'.repeat(5 - n);
   let app, db, maquina = null, respostas = {}, candidatos = [], ajustes = [], pai = null, aberta = null, abaAtual = 'novo', rascunho = null;
   let tituloResultado = '';
+  let cru = null;                                           // o dados.json como veio (o Banco não guarda o que o motor não usa; o nariz digital precisa da chave "especialista")
+  let espDados = null, espRespostas = {};                   // especialista.json baixado na 1ª recomendação e as respostas das 11 perguntas
   let vez = 0;                                              // cada tela nova ganha a vez; quem terminou depois de perdê-la não desenha por cima
 
   function el(t, a = {}, ...f) {
@@ -82,10 +85,10 @@
     $('#hist').replaceChildren(...j.caminho.map((c, i) => el('div', {}, c.pergunta + ' ', el('b', {}, c.respostas.join(', ')),
       el('button', { class: 'sec', onclick: () => { const novo = {}; j.caminho.slice(0, i).forEach(x => { novo[x.no] = respostas[x.no]; }); respostas = novo; passo(); } }, 'alterar'))));
     if (!j.pergunta) return compor();
-    desenhar(j.pergunta);
+    desenhar(j.pergunta, j.caminho.length === 0);        // na 1ª pergunta, o cartão do nariz digital dá o atalho das 11 perguntas
   }
 
-  function desenhar(p) {
+  function desenhar(p, comNariz = false) {
     const sel = new Set(), inputs = [], msg = el('div', { class: 'erro' }), bt = el('button', { disabled: true }, 'Continuar');
     function mudou(i, o) {
       msg.textContent = '';
@@ -107,7 +110,8 @@
     bt.onclick = async () => {
       try { respostas = (await api('/api/responder', { maquina, respostas, no: p.id, escolhidas: [...sel] })).respostas; passo(); } catch (e) { msg.textContent = e.message; }
     };
-    $('#tela').replaceChildren(el('div', { class: 'card' }, el('h2', {}, p.titulo), p.tipo === 'multipla' ? el('div', { class: 'dica' }, 'Pode marcar até ' + p.max + '.') : '',
+    $('#tela').replaceChildren(...(comNariz ? [cartaoNariz()] : []),
+      el('div', { class: 'card' }, el('h2', {}, p.titulo), p.tipo === 'multipla' ? el('div', { class: 'dica' }, 'Pode marcar até ' + p.max + '.') : '',
       ...linhas, msg, el('div', { class: 'linha' }, bt)));
   }
 
@@ -533,6 +537,125 @@
     conferir();
   }
 
+  // ---------------------------------------------------------------------------------------------- nariz digital (o especialista)
+  // Onze perguntas sobre o cheiro ideal (docs/09) viram 3 acordes da biblioteca recomendados aqui no aparelho. As previsões
+  // vêm prontas no especialista.json (~3 MB), buscado UMA vez quando a pessoa termina de responder — o service worker guarda.
+  const BLOCOS_ESP = { uso: 'Como você vai usar', gosto: 'Do que você gosta', quem: 'Pra quem é' };
+  const DURACAO = l => l < 1.75 ? 'poucas horas' : l < 2.75 ? 'umas 2–3 h' : l < 4 ? 'até o meio-dia' : 'o dia inteiro';
+  const ALCANCE = p => p < 1.75 ? 'só quem te abraça' : p < 3 ? 'um braço de distância' : 'enche o ambiente';
+  function estrelasMeia(r) {
+    const cheias = Math.floor(r), resto = r - cheias, meio = resto >= 0.25 && resto < 0.75;
+    const n = cheias + (resto >= 0.75 ? 1 : 0);                   // 3,6 vira ★★★½☆ e 3,9 vira ★★★★☆
+    return '★'.repeat(n) + (meio ? '½' : '') + '☆'.repeat(Math.max(0, 5 - n - (meio ? 1 : 0)));
+  }
+  function lerEsp() { try { const t = lembrar.ler(CHAVE_ESP); return t ? JSON.parse(t) : null; } catch { return null; } }
+
+  function cartaoNariz() {
+    const salvo = lerEsp();
+    return el('div', { class: 'card nariz' },
+      el('h2', {}, 'Não sabe por onde começar?'),
+      el('p', { class: 'dica' }, 'O nariz digital faz 11 perguntas sobre o perfume que você quer e recomenda acordes prontos para cheirar — tudo calculado aqui no aparelho.'),
+      el('div', { class: 'linha' },
+        el('button', { onclick: () => { espRespostas = {}; telaNariz(0); } }, 'Perguntar ao nariz digital'),
+        salvo ? el('button', { class: 'sec', onclick: () => telaNarizResultado(salvo.resultado, 'A sua última recomendação') }, 'Ver minha última recomendação') : ''));
+  }
+
+  function telaNariz(no) {
+    ++vez;                                                          // trocar de tela cancela um "consultando…" que ainda esteja por aí
+    const p = cru.especialista.perguntas[no], ultima = no === cru.especialista.perguntas.length - 1;
+    const voltar = el('button', { class: 'sec', onclick: () => (no === 0 ? passo() : telaNariz(no - 1)) }, no === 0 ? 'Voltar ao questionário' : 'Voltar');
+    if (p.tipo === 'slider') {                                     // doçura e frescor: uma barra de 0 a 10, valor aparecendo ao vivo
+      const valor = espRespostas[p.id] ?? 5;
+      const saida = el('output', {}, valor);
+      const barra = el('input', { type: 'range', id: 'esp-' + p.id, min: p.min, max: p.max, step: 1, value: valor, 'aria-label': p.texto + ' (0 a 10)' });
+      barra.oninput = () => { saida.textContent = barra.value; espRespostas[p.id] = Number(barra.value); };
+      $('#tela').replaceChildren(el('div', { class: 'card' },
+        passosEsp(no),
+        el('p', { class: 'dica' }, BLOCOS_ESP[p.bloco]), el('h2', {}, p.texto),
+        el('div', { class: 'nariz-slider' }, el('div', { class: 'linha' }, el('label', { for: 'esp-' + p.id, class: 'dica', style: 'flex:1' }, '0 é nada · 10 é muito'), saida), barra),
+        el('div', { class: 'linha' }, voltar, el('button', { onclick: () => (ultima ? narizFinal() : telaNariz(no + 1)) }, ultima ? 'Ver recomendações' : 'Avançar'))));
+      return;
+    }
+    let escolha = espRespostas[p.id] ?? null;                      // voltar reencontra a resposta de antes marcada
+    const avancar = el('button', { disabled: escolha === null, onclick: () => (ultima ? narizFinal() : telaNariz(no + 1)) }, ultima ? 'Ver recomendações' : 'Avançar');
+    const linhas = p.opcoes.map(o => {
+      const i = el('input', { type: 'radio', name: 'op', value: o.id, checked: escolha === o.id });
+      i.onchange = () => { escolha = o.id; espRespostas[p.id] = o.id; avancar.disabled = false; };
+      return el('label', { class: 'op' }, i, o.rotulo);
+    });
+    $('#tela').replaceChildren(el('div', { class: 'card' },
+      passosEsp(no),
+      el('p', { class: 'dica' }, BLOCOS_ESP[p.bloco]), el('h2', {}, p.texto),
+      ...linhas,
+      el('div', { class: 'linha' }, voltar, avancar)));
+  }
+
+  function passosEsp(no) {
+    const total = cru.especialista.perguntas.length;
+    return el('div', { class: 'nariz-passos' }, el('span', {}, 'Nariz digital'),
+      el('span', { role: 'progressbar', 'aria-valuemin': 1, 'aria-valuemax': total, 'aria-valuenow': no + 1 }, (no + 1) + ' de ' + total),
+      el('div', { class: 'barra' }, el('i', { style: 'width:' + Math.round((no + 1) / total * 100) + '%' })));
+  }
+
+  async function narizFinal() {
+    const minha = ++vez;
+    $('#tela').replaceChildren(el('div', { class: 'card' }, el('h2', {}, 'Consultando o nariz digital…'),
+      el('p', { class: 'dica' }, espDados ? 'Comparando o seu gosto com os 9.180 acordes da biblioteca…'
+        : 'Baixando a biblioteca de acordes — é uma vez só, depois fica guardada no aparelho…')));
+    try {
+      if (!espDados) {
+        const r = await fetch('especialista.json');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        espDados = await r.json();
+      }
+      const resultado = Especialista.recomendar(cru.especialista, espDados, espRespostas);
+      if (minha !== vez) return;
+      lembrar.gravar(CHAVE_ESP, JSON.stringify({ quando: new Date().toISOString(), respostas: espRespostas, resultado }));
+      telaNarizResultado(resultado, 'O nariz digital recomenda');
+    } catch (e) {
+      if (minha !== vez) return;
+      $('#tela').replaceChildren(el('div', { class: 'card erro' }, 'Não consegui consultar a biblioteca de acordes (' + e.message + '). Conecte-se à internet uma vez para baixá-la.'),
+        el('div', { class: 'linha' }, el('button', { onclick: () => narizFinal() }, 'Tentar de novo'),
+          el('button', { class: 'sec', onclick: () => telaNariz(cru.especialista.perguntas.length - 1) }, 'Voltar às perguntas')));
+    }
+  }
+
+  function cartaoDoAcorde(c, i, alvo) {
+    const comparado = (previsto, pedido, texto) => pedido == null ? '' : ' — você pediu ' + texto + (Math.abs(previsto - pedido) <= 1 ? ' ✓' : ' ⚠');
+    const chips = [];
+    if (c.selos.fiel) chips.push(el('span', { class: 'chip ok' }, 'fiel ao pedido'));
+    if (c.selos.distancia) chips.push(el('span', { class: 'chip ok' }, 'distância OK'));
+    if (c.selos.aprovado) chips.push(el('span', { class: 'chip ok' }, 'aprovado pela multidão'));
+    if (c.selos.comportamento) chips.push(el('span', { class: 'chip ok' }, 'dura e alcança como você pediu'));
+    if (!chips.length) chips.push(el('span', { class: 'chip atencao' }, 'o mais perto que a biblioteca tem'));
+    const nota = el('p', {}, el('b', {}, 'Vai cheirar como: '), c.top.map(t => t.nome + ' ' + Math.round(t.peso)).join(', '));
+    const estrelinhas = el('span', { class: 'estrelas', 'aria-label': 'nota prevista ' + fmt(c.rating) + ' de 5' }, estrelasMeia(c.rating));
+    return el('div', { class: 'card' },
+      el('h2', {}, (i + 1) + '. ' + c.nome),
+      el('p', { class: 'dica' }, c.faceta + ' · família ' + c.familia),
+      nota,
+      el('p', {}, estrelinhas, ' ', fmt(c.rating), ' de 5 — previsão da comunidade'),
+      el('p', { class: 'dica' }, 'Dura ' + DURACAO(c.longevidade) + comparado(c.longevidade, alvo.longevidade_alvo, DURACAO(alvo.longevidade_alvo))
+        + ' · Alcance: ' + ALCANCE(c.projecao) + comparado(c.projecao, alvo.projecao_alvo, ALCANCE(alvo.projecao_alvo))),
+      el('div', {}, ...chips),
+      ...c.avisos.map(a => el('p', { class: 'alerta' }, '⚠ ' + a + '.')),
+      el('div', { class: 'linha' }, el('button', { onclick: () => { location.href = 'catalogo.html?acorde=' + encodeURIComponent(c.id); } }, 'Ver no catálogo')));
+  }
+
+  function telaNarizResultado(r, titulo) {
+    ++vez;
+    $('#tela').replaceChildren(
+      el('div', { class: 'card' }, el('h2', {}, titulo),
+        r.aviso_geral ? el('p', { class: 'falta' }, r.aviso_geral) : '',
+        el('p', { class: 'dica' }, 'Os acordes da biblioteca mais perto do que você descreveu. O cheiro e a nota da multidão são previsões — nada substitui cheirar.')),
+      ...r.resultados.map((c, i) => cartaoDoAcorde(c, i, r.alvo)),
+      r.alternativas.length ? el('div', { class: 'card' }, el('h2', {}, 'Outras ideias'),
+        el('ul', { class: 'hist' }, ...r.alternativas.map(a => el('li', { style: 'margin:4px 0' }, a.nome, ' — ', a.faceta)))) : '',
+      el('div', { class: 'card' }, el('div', { class: 'linha' },
+        el('button', { onclick: () => { espRespostas = {}; telaNariz(0); } }, 'Refazer respostas'),
+        el('button', { class: 'sec', onclick: () => passo() }, 'Voltar ao questionário'))));
+  }
+
   // ---------------------------------------------------------------------------------------------- partida
   function servico() {
     if (!('serviceWorker' in navigator)) return;
@@ -548,7 +671,8 @@
     try {
       const resposta = await fetch('dados.json');
       if (!resposta.ok) throw new Error('HTTP ' + resposta.status);
-      db = new Motor.Banco(await resposta.json());
+      cru = await resposta.json();
+      db = new Motor.Banco(cru);
       app = Motor.criar_app(db, guardar, undefined, propria);
     } catch {
       $('#tela').replaceChildren(el('div', { class: 'card erro' }, 'Não consegui carregar os dados do app. Conecte-se à internet uma vez para instalar.'));

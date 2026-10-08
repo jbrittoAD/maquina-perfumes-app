@@ -1,7 +1,7 @@
 // Service worker: guarda o app inteiro no aparelho (um cache por versão) e responde sempre do cache, para abrir sem internet.
 // As duas linhas abaixo são reescritas por exportar_pwa.py: a versão é o hash dos arquivos, e é ela que faz o navegador atualizar.
-const VERSAO = '2c7f9c9fec86';
-const ARQUIVOS = ["./", "index.html", "app.js", "motor.js", "dados.json", "catalogo.html", "escadas.html", "manifest.webmanifest", "icone-192.png", "icone-512.png", "icone-maskable-512.png"];
+const VERSAO = 'd7873bee336a';
+const ARQUIVOS = ["./", "index.html", "app.js", "motor.js", "especialista.js", "dados.json", "especialista.json", "catalogo.html", "escadas.html", "manifest.webmanifest", "icone-192.png", "icone-512.png", "icone-maskable-512.png"];
 const CACHE = 'perfume-' + VERSAO;
 
 self.addEventListener('install', e => e.waitUntil(
