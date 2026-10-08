@@ -22,6 +22,7 @@
   let tituloResultado = '';
   let cru = null;                                           // o dados.json como veio (o Banco não guarda o que o motor não usa; o nariz digital precisa da chave "especialista")
   let espDados = null, espRespostas = {};                   // especialista.json baixado na 1ª recomendação e as respostas das 11 perguntas
+  let usandoBiblio = false, biblioPronta = false;           // a composição está usando os acordes da biblioteca (§2.18), e o biblioteca.json já baixado
   let vez = 0;                                              // cada tela nova ganha a vez; quem terminou depois de perdê-la não desenha por cima
 
   function el(t, a = {}, ...f) {
@@ -79,6 +80,7 @@
   async function passo() {
     const minha = ++vez;
     candidatos = [];
+    usandoBiblio = false;                       // questionário novo: começa nas sugestões do kit (a biblioteca é convite à parte)
     marcarAba('novo');
     const j = await api('/api/proxima', base());
     if (minha !== vez) return;
@@ -116,17 +118,40 @@
   }
 
   // ---------------------------------------------------------------------------------------------- receitas sugeridas
-  async function compor() {
+  /* A outra fonte do compositor (docs/08 §2.18): os 9.180 acordes gerados do catálogo. Vêm do biblioteca.json,
+   * baixado UMA vez quando a pessoa pede (o service worker guarda, como o especialista.json); nenhum deles foi
+   * cheirado, então a tela avisa que são hipóteses — as sugestões do kit seguem sendo as primeiras. */
+  async function carregarBiblioteca() {
+    if (biblioPronta) return;
+    const r = await fetch('biblioteca.json');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    db.definir_biblioteca(await r.json());
+    biblioPronta = true;
+  }
+
+  async function compor(bib = false) {
     const minha = ++vez;
-    $('#tela').replaceChildren(el('div', { class: 'card' }, 'Montando seus perfumes…'));
+    usandoBiblio = bib;
+    $('#tela').replaceChildren(el('div', { class: 'card' }, bib ? (biblioPronta ? 'Consultando a biblioteca de acordes…'
+      : 'Baixando a biblioteca de acordes — é uma vez só, depois fica guardada no aparelho…') : 'Montando seus perfumes…'));
     try {
-      const j = await api('/api/compor', base());
+      if (bib) await carregarBiblioteca();
+      const j = await api('/api/compor', { ...base(), biblioteca: bib });
       if (minha !== vez) return;
       candidatos = j.candidatos;
       ajustes = j.ajustes;
-      tituloResultado = candidatos.length ? ['Uma sugestão', 'Duas sugestões', 'Três sugestões'][candidatos.length - 1] + ' para você' : '';
+      tituloResultado = candidatos.length ? ['Uma sugestão', 'Duas sugestões', 'Três sugestões'][candidatos.length - 1]
+        + (bib ? ' da biblioteca' : ' para você') : '';
       resultado();
-    } catch (e) { if (minha === vez) erro(e); }
+    } catch (e) {
+      if (minha !== vez) return;
+      if (bib) {
+        $('#tela').replaceChildren(el('div', { class: 'card erro' }, 'Não consegui consultar a biblioteca de acordes (' + e.message
+          + '). Conecte-se à internet uma vez para baixá-la.'),
+          el('div', { class: 'linha' }, el('button', { onclick: () => compor(true) }, 'Tentar de novo'),
+            el('button', { class: 'sec', onclick: () => compor(false) }, 'Voltar às sugestões do kit')));
+      } else erro(e);
+    }
   }
 
   function cartao(c, i, rotulo, acao) {
@@ -145,6 +170,10 @@
     (c.faltando || []).forEach(f => box.append(el('p', { class: 'falta' },
       'Esta máquina não tem ' + f.nome + (f.equivalentes.length ? ' (parecidos que ela tem: ' + f.equivalentes.join(', ') + ')' : '') + '.')));
     c.escolhas.forEach(e => box.append(el('p', { class: 'dica' }, 'Você pode trocar em "' + e.item + '": ' + e.opcoes.join(', ') + '.')));
+    if (c.acorde_biblioteca) box.append(el('p', { class: 'dica' },
+      el('span', { class: 'chip atencao' }, 'acorde da biblioteca'),
+      ' Ninguém cheirou este acorde ainda: é uma hipótese para cheirar — ',
+      el('a', { href: 'catalogo.html?acorde=' + encodeURIComponent(c.acorde_biblioteca.id) }, 'ver no catálogo')));
     if (c.tecnico) box.append(blocoTecnico(c.tecnico));
     if (acao) box.append(el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: acao }, rotulo)));
     return box;
@@ -234,8 +263,13 @@
   function resultado() {
     const t = $('#tela');
     if (!candidatos.length) { t.replaceChildren(el('div', { class: 'card' }, 'Nenhum perfume possível com esse pedido nesta máquina. Tente alterar alguma resposta acima.')); return; }
-    t.replaceChildren(el('h2', {}, tituloResultado), ...candidatos.map((c, i) => cartao(c, i, 'Quero este', () => feito(c))),
-      el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: () => { respostas = {}; pai = null; passo(); } }, 'Começar de novo')));
+    const avisoBiblio = usandoBiblio ? [el('div', { class: 'card nariz' }, el('h2', {}, 'Sugestões da biblioteca'),
+      el('p', { class: 'dica' }, 'Estas receitas montam com os ' + (biblioPronta ? db.biblioteca.acordes.length.toLocaleString('pt-BR') : '9.180')
+        + ' acordes da biblioteca — combinações criadas por regra sobre os mesmos vidros da máquina. Ninguém as cheirou ainda: são hipóteses para experimentar, como as previsões do nariz digital.'))] : [];
+    t.replaceChildren(el('h2', {}, tituloResultado), ...avisoBiblio, ...candidatos.map((c, i) => cartao(c, i, 'Quero este', () => feito(c))),
+      el('div', { class: 'linha' },
+        el('button', { class: 'sec', onclick: () => compor(!usandoBiblio) }, usandoBiblio ? 'Voltar às sugestões do kit' : 'Ver opções da biblioteca'),
+        el('button', { class: 'sec', onclick: () => { respostas = {}; pai = null; passo(); } }, 'Começar de novo')));
   }
 
   // ---------------------------------------------------------------------------------------------- ajuste fino por ingrediente
@@ -684,7 +718,7 @@
       lembrar.gravar(CHAVE_MAQUINA, maquina);
       if (aberta !== null) abrir(aberta); else if (abaAtual === 'receitas') listar(); else if (abaAtual === 'mapa') telaMapa(); else { respostas = {}; passo(); }
     };
-    $('#tec').onchange = () => { if (aberta !== null) abrir(aberta); else if (candidatos.length) compor(); };
+    $('#tec').onchange = () => { if (aberta !== null) abrir(aberta); else if (candidatos.length) compor(usandoBiblio); };
     $('#aba-novo').onclick = () => { aberta = null; pai = null; passo(); };
     $('#aba-receitas').onclick = listar;
     $('#aba-mapa').onclick = telaMapa;

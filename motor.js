@@ -102,6 +102,11 @@
       this.glossario = new Map(Object.entries(d.glossario));
       this.familias_pt = d.familias_pt;
       this.regras_quimicas = d.regras_quimicas;
+      this.biblioteca = null;                 // os 9.180 do catálogo: entra por definir_biblioteca (fetch lazy, como o especialista.json)
+    }
+
+    definir_biblioteca(bruto) {               // os índices do biblioteca.json (exportar_pwa.py): cas e notas por índice, itens [cas, partes]
+      this.biblioteca = bruto;
     }
 
     _empilhar(mapa, chave, valor) {
@@ -395,8 +400,8 @@
 
   class Brief {
     constructor({ familias = {}, notas = [], evitar_notas = [], evitar_materiais = [], concentracao_pct = 15.0, massa_final_g = 26.5, preferir_acordes = [],
-      peso_base = null, base_familias = {}, evitar_familias = [] } = {}) {
-      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes, peso_base, base_familias, evitar_familias });
+      peso_base = null, base_familias = {}, evitar_familias = [], biblioteca = false } = {}) {
+      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes, peso_base, base_familias, evitar_familias, biblioteca });
     }
     pesos() {
       const positivos = Object.entries(this.familias).filter(([, v]) => v > 0);
@@ -414,7 +419,7 @@
   class Candidato {
     constructor({ nome, protagonista_id, itens, massa_final_g, avisos = [], pontuacao = 0.0 }) {
       Object.assign(this, { nome, protagonista_id, itens, massa_final_g, avisos, pontuacao,
-        explicacao: [], trocas: [], escolhas_pendentes: [], traducao: null, resultado: null });
+        explicacao: [], trocas: [], escolhas_pendentes: [], traducao: null, resultado: null, biblio: null });
     }
     get valido() { return this.resultado !== null && this.resultado.ok && this.traducao !== null && this.traducao.completa; }
   }
@@ -433,6 +438,51 @@
       return [pares, item];
     }
     return [[], null];
+  }
+
+  // Os acordes gerados do catálogo (docs/08 §2.16) que esta máquina consegue fazer — o porte de motor/biblioteca.py.
+  // Os ids internos vivem acima do OFFSET (índice do acorde no biblioteca.json); o py e o js resolvem os mesmos CAS
+  // contra os mesmos vidros, então as frações e as trocas por parecido são idênticas.
+  const OFFSET_BIBLIOTECA = 1000000;
+
+  function _resolver_da_biblioteca(db, universo, ids, proibidos, cache) {
+    for (const mid of ids) if (universo.has(mid) && !proibidos.has(mid)) return [mid, null];
+    if (!ids || !ids.length) return [null, null];
+    const alvo = ids[0];
+    if (!cache.has(alvo)) cache.set(alvo, parecidos_em(db, alvo, universo).map(([m]) => m));
+    for (const m of cache.get(alvo)) if (!proibidos.has(m)) return [m, `${db.nome(alvo)} → ${db.nome(m)} (parecido)`];
+    return [null, null];
+  }
+
+  function _acordes_da_biblioteca(db, inv, proibidos) {
+    if (db.biblioteca === null) throw new ErroDeUso('a biblioteca de acordes ainda não foi baixada');
+    const biblia = db.biblioteca, universo = new Set(inv.keys()), cache = new Map();
+    const out = [];
+    for (let i = 0; i < biblia.acordes.length; i++) {
+      const [bid, nome, tier, ni, itens] = biblia.acordes[i];
+      if (tier === 'C') continue;                                 // só toque: o motor não tem esse papel
+      const total = soma(itens.map(([, p]) => p));
+      const mantidos = new Map(), trocas = [];
+      let mantido = 0.0;
+      for (const [ci, partes] of itens) {
+        const [mid, troca] = _resolver_da_biblioteca(db, universo, db.por_cas.get(biblia.cas[ci]) || [], proibidos, cache);
+        if (mid === null) continue;                               // item fora: a cobertura dá conta dele
+        mantido += partes;
+        mantidos.set(mid, (mantidos.get(mid) || 0.0) + partes);
+        if (troca) trocas.push(troca);
+      }
+      if (!mantido || mantido / total < COBERTURA_MIN) continue;
+      const mats = new Map([...mantidos].map(([m, p]) => [m, p / mantido]));
+      const fam = {};
+      for (const [m, f] of mats) {
+        const fc = db.materiais.get(m).familia_canonica;
+        if (fc) fam[fc] = (fam[fc] === undefined ? 0.0 : fam[fc]) + f;
+      }
+      out.push({ id: OFFSET_BIBLIOTECA + i, nome, nota: ni === null ? null : biblia.notas[ni], tier,
+        materiais: mats, pontuacao: 0.0, familias: fam, trocas, pendentes: [], cobertura: mantido / total,
+        validado: false, biblio: bid });
+    }
+    return out;
   }
 
   function _acordes_da_maquina(db, inv) {
@@ -461,7 +511,8 @@
         if (fc) fam[fc] = (fam[fc] === undefined ? 0.0 : fam[fc]) + f;
       }
       out.push({ id: ac.id, nome: ac.nome, nota: ac.nota_id === null ? null : db.notas.get(ac.nota_id).slug, materiais: mats,
-        pontuacao: 0.0, familias: fam, trocas, pendentes: pend, cobertura: ins.cobertura_partes, validado: ac.validado });
+        pontuacao: 0.0, familias: fam, trocas, pendentes: pend, cobertura: ins.cobertura_partes, validado: ac.validado,
+        tier: 'A', biblio: null });
     }
     return out;
   }
@@ -703,8 +754,14 @@
     const proibidos = _proibidos(db, brief);
     const pesos = brief.pesos();
     const sem_pedido = !Object.keys(pesos).length;
-    let acordes = _acordes_da_maquina(db, inv)
-      .filter(a => ![...a.materiais.keys()].some(m => proibidos.has(m)) && !brief.evitar_notas.includes(a.nota));
+    // acorde é bloco autoral (decisão do dono 08/10): item INTERNO de família evitada tira o acorde inteiro —
+    // vale para as duas fontes (dicionário e biblioteca); as famílias internas vêm da mesma fonte da pontuação
+    // (familia_canonica). Sem sobrar acorde, cai na composição por famílias, que já avisa em vez de lista vazia.
+    const evitadas = new Set(brief.evitar_familias);
+    const fonte = brief.biblioteca ? _acordes_da_biblioteca(db, inv, proibidos) : _acordes_da_maquina(db, inv);
+    let acordes = fonte
+      .filter(a => ![...a.materiais.keys()].some(m => proibidos.has(m)) && !brief.evitar_notas.includes(a.nota)
+        && !Object.keys(a.familias).some(f => evitadas.has(f)));
     for (const a of acordes) a.pontuacao = _pontuar(a, brief, pesos);
     acordes.sort((a, b) => (b.pontuacao - a.pontuacao) || (a.id - b.id));
     if (!sem_pedido || brief.notas.length) acordes = acordes.filter(a => a.pontuacao >= PONTUACAO_MIN);   // com pedido, só entra acorde que combina com ele
@@ -713,7 +770,7 @@
     for (let k = 0; k < n; k++) {
       const livres = acordes.filter(a => !usados.has(a.id));
       const ja_usados = acordes.filter(x => usados.has(x.id));
-      const prot = livres.find(a => ja_usados.every(c => _jaccard(a, c) < 0.8)) || null;
+      const prot = livres.find(a => a.tier === 'A' && ja_usados.every(c => _jaccard(a, c) < 0.8)) || null;
       if (prot === null && (k > 0 || sem_pedido)) break;
       if (prot === null) {                                  // nenhum acorde combina: compõe por famílias
         const base = _camada_base(db, inv, proibidos, k, brief.familias_da_base());
@@ -752,6 +809,7 @@
         soma(Object.values(deficit)) >= DEFICIT_MIN ? deficit : {}, inv, proibidos, k, solvente_id, nd);
       for (const nota of sem_nota) avisos.push(`a nota '${nota}' que você pediu não tem como ser feita nesta máquina`);
       const c = new Candidato({ nome: prot.nome, protagonista_id: prot.id, itens, massa_final_g: brief.massa_final_g, avisos, pontuacao: prot.pontuacao });
+      c.biblio = prot.biblio;
       c.trocas = prot.trocas.concat(apoio ? apoio.trocas : []);
       c.escolhas_pendentes = prot.pendentes.concat(apoio ? apoio.pendentes : []);
       c.explicacao = [`Protagonista: ${prot.nome} (${porcento(prot.cobertura, 0)} do acorde original)`];
@@ -1062,6 +1120,7 @@
       concentracao_pct: pyround(100.0 * tot / c.massa_final_g, 1), massa_final_g: c.massa_final_g,
       ingredientes, cuidados: avisos_quimicos, alergias, motivos, protagonista_id: c.protagonista_id,
       escolhas: c.escolhas_pendentes.map(p => ({ item: p.item, opcoes: p.opcoes })), formula,
+      acorde_biblioteca: c.biblio ? { id: c.biblio } : null,      // veio da biblioteca gerada: hipótese para cheirar (§2.16)
     };
     if (mostrar_tecnico) {
       const maq = db.maquinas.get(maquina_id);
@@ -1239,12 +1298,15 @@
         const mid = maquina(corpo), r = corpo.respostas || {}, cap = cap_de(mid);
         if (proxima(r, q, cap) !== null) throw new ErroDeUso('o questionário ainda não terminou');
         const b = montar_brief(db, r, q, cap);
+        b.biblioteca = !!corpo.biblioteca;          // a outra fonte de acordes (§2.18): o pedido é quem decide
         return { candidatos: compor(db, mid, b, 3).map(c => descrever(db, mid, c, !!corpo.tecnico)), ajustes: Object.keys(AJUSTES) };
       },
 
       '/api/refinar': corpo => {
         const mid = maquina(corpo), b = montar_brief(db, corpo.respostas || {}, q, cap_de(mid));
-        const base = new Candidato({ nome: '', protagonista_id: parseInt(corpo.protagonista_id, 10) || 0, itens: new Map(), massa_final_g: b.massa_final_g });
+        const pid = parseInt(corpo.protagonista_id, 10) || 0;
+        b.biblioteca = !!corpo.biblioteca || pid >= OFFSET_BIBLIOTECA;   // protagonista da biblioteca: o próprio id diz (a receita salva não guarda a fonte)
+        const base = new Candidato({ nome: '', protagonista_id: pid, itens: new Map(), massa_final_g: b.massa_final_g });
         const novo = refinar(db, mid, base, b, corpo.ajuste);
         if (novo === null) throw new ErroDeUso('não consegui refinar esse pedido nesta máquina');
         return { candidato: descrever(db, mid, novo, !!corpo.tecnico) };
