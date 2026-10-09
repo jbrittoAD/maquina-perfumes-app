@@ -18,7 +18,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const VOLUMES_ML = [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100];   // a grade da decisão 3 (5 a 100 ml)
+  const VOLUMES_ML = Array.from({ length: 20 }, (_, i) => 5 * (i + 1));   // a grade das decisões 3 e 14: 5, 10, 15 … 100 ml
   const DENSIDADE_DECLARADA = 0.83;        // g/ml — a aproximação declarada do projeto (guia de montagem dos vidros)
   const RESERVA_ESTOQUE = 0.05;            // a mesma do validador: a linha "não cobre" acompanha o bloqueio do motor
   const CONCENTRACAO_PADRAO = 15.0;        // o PADRAO do Brief do motor: acorde é CONCENTRADO — o motor dosaria 15% e completaria com etanol
@@ -35,6 +35,11 @@
   };
 
   const fmt1 = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+  const fmt2 = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  /* O lote mínimo é um PISO: arredonda para CIMA no décimo de ml (8,03 ml vira 8,1 — "8 ml" não dosaria). O 1e-9 só
+   * absorve o ruído do ponto flutuante (8,0000000001 continua 8). */
+  const mlParaCima = ml => Math.ceil(ml * 10 - 1e-9) / 10;
+  const mlTxt = ml => fmt1(mlParaCima(ml));
   const pctTxt = p => (p < 1 ? Number(p).toLocaleString('pt-BR', { maximumFractionDigits: 3 }) : fmt1(p));   // traço menor que 1% não pode aparecer como "0%"
   const soma = xs => xs.reduce((s, x) => s + x, 0);
   const r4 = x => motor().numeros.pyround(x, 4);            // as gramas do arquivo têm 4 casas, como as receitas do app
@@ -65,16 +70,17 @@
     return { mg: pico === null ? 0 : pico.mg, ml: pico === null ? 0 : pico.mg / 1000 / DENSIDADE_DECLARADA, dose_mg, limitante: pico };
   }
 
-  /* A explicação da decisão 14, no estilo do exemplo do dono: nomeia o ingrediente limitante e o menor lote que dosa. */
+  /* A explicação da decisão 14, no estilo do exemplo do dono: nomeia o ingrediente limitante e o menor lote que dosa.
+   * `mgAqui` é a massa de SOLUÇÃO do vidro que `ml` ml pediriam: f × (ml × 0,83 g/ml × 1000 mg/g) ÷ c — em mg, como o texto diz. */
   function explicacaoLote(lote, ml) {
     const l = lote.limitante;
     if (l === null) return '';
-    const mgAqui = l.fracao * ml * DENSIDADE_DECLARADA / (l.diluicao_pct / 100);
-    return `o ${l.nome} é ${pctTxt(l.fracao * 100)}% da fórmula — em ${ml} ml seriam ${fmt1(mgAqui)} mg, abaixo dos ${lote.dose_mg} mg`
-      + ` que a máquina consegue dosar; o menor lote que dosa é ${fmt1(lote.ml)} ml`;
+    const mgAqui = l.fracao * ml * DENSIDADE_DECLARADA * 1000 / (l.diluicao_pct / 100);
+    return `o ${l.nome} é ${pctTxt(l.fracao * 100)}% da fórmula — em ${ml} ml seriam ${fmt2(mgAqui)} mg, abaixo dos ${lote.dose_mg} mg`
+      + ` que a máquina consegue dosar; o menor lote que dosa é ${mlTxt(lote.ml)} ml`;
   }
 
-  /* O seletor: as 13 opções da grade, desabilitadas ABAIXO do lote mínimo (com o motivo físico) e ACIMA do lote da
+  /* O seletor: as 20 opções da grade, desabilitadas ABAIXO do lote mínimo (com o motivo físico) e ACIMA do lote da
    * máquina (a mvp-64 dosa até 44 g ≈ 53 ml — dado do mapa, não inventado). `padrao` é a menor opção que dosa. */
   function seletor(db, maquina_id, itens) {
     const maq = db.maquinas.get(maquina_id);
@@ -98,10 +104,24 @@
   }
 
   // ---------------------------------------------------------------------------------------------- as fórmulas das três fontes
-  /* Receita salva: as gramas de ativo religadas pelo motor viram frações sobre a massa final — é o que escala para o lote. */
+  /* Receita salva: as gramas de ativo religadas pelo motor viram frações sobre a massa final — é o que escala para o lote.
+   * A massa final volta junto: é o lote de referência do anúncio publicado a partir da receita. `sumidos` = itens que não
+   * religaram ao catálogo deste app (a fórmula ficaria incompleta — a pré-checagem bloqueia). */
   function daReceita(formula, massa_final_g, titulo, nota = null, respostas = {}) {
     const itens = Object.entries(formula).map(([id, g]) => ({ material_id: Number(id), fracao: g / massa_final_g }));
-    return { titulo, itens, fonte: 'receitas', nota, respostas, trocas: [], escolhas: [], faltando: [], cobertura: 1, impossivel: false };
+    return { titulo, itens, massa_final_g, fonte: 'receitas', nota, respostas, trocas: [], escolhas: [], faltando: [], sumidos: [],
+      cobertura: 1, impossivel: false };
+  }
+
+  /* A receita salva como o motor a devolve no /api/receita (o mesmo `candidato` que o "Abrir → Imprimir" usa): a
+   * `formula` já religada ao catálogo de hoje e a `massa_final_g`. O resumo (`j.receita`) não traz os itens — de lá vêm
+   * só nome, nota e respostas. O que estava salvo e não religou aparece no `faltando` do motor sem estar na fórmula. */
+  function daReceitaSalva(db, j) {
+    const c = j.candidato, r = j.receita;
+    const f = daReceita(c.formula, c.massa_final_g, r.nome, r.nota, r.respostas);
+    const naFormula = new Set(f.itens.map(i => db.nome(i.material_id)));
+    f.sumidos = c.faltando.filter(x => !naFormula.has(x.nome)).map(x => x.nome);
+    return f;
   }
 
   /* Acorde do dicionário resolvido contra os vidros desta máquina — o caminho do motor (instanciar → reduzir →
@@ -198,28 +218,41 @@
   /* A fórmula escalada para o lote escolhido passa pelo motor (/api/ajustar): a dosagem vidro a vidro é o que a
    * impressão vai consumir, e o estoque de cada vidro sai do mapa (volume × densidade — a calibração v1 preenche a
    * densidade pelo mesmo campo do preenchimento manual). Sem densidade o estoque é teórico: nenhum número inventado.
-   * Os bloqueios são os erros do próprio motor (estoque, dose mínima, IFRA, lote) — mais as linhas "não cobre". */
+   * Os bloqueios são os erros do próprio motor (estoque, dose mínima, IFRA, lote), as linhas "não cobre" (a MESMA
+   * conta do validador, sem arredondar: g > volume × densidade × (1 − reserva)) e o que FALTA (decisão 8: material da
+   * fórmula sem vidro nesta máquina, ou fora do catálogo deste app) — sem vidro a fórmula não sai inteira. */
   function prechecagem(db, app, maquina_id, formula, massa_g, nome) {
     const itens = {};
     for (const it of formula.itens) itens[it.material_id] = it.fracao * massa_g;
+    const sumidos = formula.sumidos || [];
+    const bloqueioSumidos = sumidos.length ? [`Fora do catálogo deste app: ${sumidos.join(', ')} — a fórmula não sai inteira`] : [];
     let j;
     try {
       j = app.chamar('/api/ajustar', { maquina: maquina_id, respostas: {}, itens, novos: {}, massa_final_g: massa_g, nome, tecnico: true });
-    } catch (e) { return { ok: false, linhas: [], bloqueios: [e.message], semEstoque: [], outros: [e.message], avisos: [], candidato: null, faltando: [] }; }
+    } catch (e) {
+      return { ok: false, linhas: [], bloqueios: bloqueioSumidos.concat([e.message]), semEstoque: [], outros: [e.message], avisos: [],
+        candidato: null, faltando: sumidos };
+    }
     const maq = db.maquinas.get(maquina_id);
     const linhas = j.candidato.tecnico.job.itens.map(i => {
       const c = maq.por_canal.get(i.canal);
-      const restam = c && c.densidade_g_ml && c.volume_atual_ml !== null
-        ? Math.round(c.densidade_g_ml * c.volume_atual_ml * 10) / 10 : null;    // a mesma conta do bloco de calibração
-      const cobre = restam === null ? null : i.gramas <= restam * (1 - RESERVA_ESTOQUE) + 1e-9;
-      return { canal: i.canal, material: i.material, usar_g: i.gramas, restam_g: restam,
-        estoque_texto: restam === null ? ESTOQUE_TEORICO : `restam ~${fmt1(restam)} g`, cobre };
+      const conferivel = !!(c && c.densidade_g_ml && c.volume_atual_ml !== null);
+      const restam = conferivel ? Math.round(c.densidade_g_ml * c.volume_atual_ml * 10) / 10 : null;   // só para LER (a mesma conta do bloco de calibração)
+      const da_g = conferivel ? c.volume_atual_ml * c.densidade_g_ml * (1 - RESERVA_ESTOQUE) : null;    // o que o validador deixa tirar
+      const cobre = conferivel ? !(i.gramas > da_g) : null;                                             // a desigualdade do validador, sem folga
+      return { canal: i.canal, material: i.material, usar_g: i.gramas, restam_g: restam, da_g,
+        estoque_texto: conferivel ? `restam ~${fmt1(restam)} g` : ESTOQUE_TEORICO, cobre };
     }).sort((a, b) => a.canal - b.canal);
     const semEstoque = linhas.filter(l => l.cobre === false)
-      .map(l => `não vai dar com o que tem: ${l.material} — a impressão pede ${fmt1(l.usar_g)} g e ${l.estoque_texto} no vidro ${l.canal}`);
+      .map(l => `não vai dar com o que tem: ${l.material} — a impressão pede ${fmt2(l.usar_g)} g e o vidro ${l.canal} dá até`
+        + ` ~${fmt2(l.da_g)} g (${l.estoque_texto}, menos a reserva de ${RESERVA_ESTOQUE * 100}%)`);
     const outros = j.problemas.filter(p => !/ restam ~.+ g no frasco$/.test(p));
-    return { ok: j.problemas.length === 0, linhas, bloqueios: semEstoque.concat(outros), semEstoque, outros,
-      avisos: j.avisos, candidato: j.candidato, faltando: j.candidato.faltando };
+    const semVidro = j.candidato.faltando.map(f => f.nome);
+    const bloqueioSemVidro = semVidro.length ? [`Fora desta máquina: ${semVidro.join(', ')} — sem esse vidro a fórmula não sai inteira`] : [];
+    const bloqueios = bloqueioSemVidro.concat(bloqueioSumidos, semEstoque, outros);
+    const ok = bloqueios.length === 0 && j.problemas.length === 0 && j.candidato.valido;
+    if (!ok && !bloqueios.length) bloqueios.push(...(j.problemas.length ? j.problemas : ['o motor não validou esta fórmula nesta máquina']));   // botão desligado sempre com o porquê
+    return { ok, linhas, bloqueios, semEstoque, outros, avisos: j.avisos, candidato: j.candidato, faltando: semVidro.concat(sumidos) };
   }
 
   // ---------------------------------------------------------------------------------------------- o "XML" da decisão 9
@@ -242,7 +275,7 @@
   return {
     ErroDeUso, VOLUMES_ML, DENSIDADE_DECLARADA, GRATIS, ESTOQUE_TEORICO, CONCENTRACAO_PADRAO,
     usar(m) { M = m; },
-    canalMaisDiluido, loteMinimo, explicacaoLote, seletor, avisoReferencia,
-    daReceita, doAcorde, daBiblioteca, comoProduto, prechecagem, arquivoDaFormula,
+    canalMaisDiluido, loteMinimo, explicacaoLote, seletor, avisoReferencia, mlParaCima,
+    daReceita, daReceitaSalva, doAcorde, daBiblioteca, comoProduto, prechecagem, arquivoDaFormula,
   };
 });

@@ -1,11 +1,15 @@
-/* Calibração do vidro em JavaScript (docs/11 §2): o fator mg/passo e a densidade real de cada canal, medidos
- * por quem monta a máquina com uma balança de 0,01 g. Não é porte de nenhum Python — é ferramenta nova do app,
- * UI + conta própria; o motor de composição e o validador NÃO leem daqui (a densidade medida entra pelo mesmo
- * campo `densidade_g_ml` que o preenchimento manual do mapa usa, e o resto fica só na tela do canal).
+/* Calibração do vidro em JavaScript (docs/11 §2): a massa por GOTA (pulso) e a densidade real de cada canal, medidas
+ * por quem monta a máquina com uma balança de 0,01 g. A unidade segue a máquina real: a D1 revisada (docs/03, 03/10)
+ * conta GOTAS e calibra a massa de gota por canal pesando 50 gotas; o firmware de hoje (dosagem.cpp) dosa por pulso
+ * de válvula ≈ 1 gota e aprende `mg_por_pulso` sozinho. Os campos guardados (`fator_mg_passo`, `passos` da rodada)
+ * mantêm o nome antigo para não perder calibrações já gravadas — o valor é mg por gota/pulso.
+ * Não é porte de nenhum Python — é ferramenta nova do app, UI + conta própria; o motor de composição e o validador
+ * NÃO leem daqui (a densidade medida entra pelo mesmo campo `densidade_g_ml` que o preenchimento manual do mapa usa,
+ * e o resto fica só na tela do canal).
  *
  * Onde grava: localStorage `perfume.calibracao.v1`, por máquina+canal (nunca no mapa): religa pelo canal e, se o
- * vidro trocar de material, a calibração aparece como DESATUALIZADA e pede recalibrar (a checagem rápida da
- * troca de vidro é o terceiro padrão do docs/11 §2). Testes: pwa/teste/calibracao.test.mjs.
+ * vidro trocar de material OU de diluição, a calibração aparece como DESATUALIZADA e pede recalibrar (a checagem
+ * rápida da troca de vidro é o terceiro padrão do docs/11 §2). Testes: pwa/teste/calibracao.test.mjs.
  */
 (function (raiz, fabrica) {
   if (typeof module === 'object' && module.exports) module.exports = fabrica();
@@ -14,7 +18,7 @@
   'use strict';
 
   const CHAVE = 'perfume.calibracao.v1';
-  const CASAS = 3;                                  // casas dos fatores mg/passo e da densidade (µg/passo já é além da balança)
+  const CASAS = 3;                                  // casas dos fatores mg/gota e da densidade (µg/gota já é além da balança)
   const CONCENTRADO_G = 4;                          // docs/08 §4: lote de referência (30 ml EDP 15% ≈ 4 g de concentrado)
   const PISO_MG = 100;                              // docs/08 §4: ≥100 mg dispensados para erro ≤ ~20% (hipótese, dono decide a tolerância)
   const AVISO_PISO = 'este vidro dosa abaixo do piso de precisão p/ o uso típico — considere diluir mais';
@@ -23,13 +27,13 @@
 
   const r3 = x => Math.round((x + Number.EPSILON) * 1e3) / 1e3;
 
-  /* Uma rodada: pesou o vidro cheio, rodou N passos da bomba, pesou de novo.
-   * mg/passo = Δmassa × 1000 / passos (docs/11 §2). A balança de 0,01 g dá mg inteiros; o fator sai com 3 casas. */
+  /* Uma rodada: pesou o vidro cheio, a máquina pingou N gotas (pulsos) dele, pesou de novo.
+   * mg/gota = Δmassa × 1000 / gotas (a conta do docs/11 §2). A balança de 0,01 g dá mg inteiros; o fator sai com 3 casas. */
   function fatorDaRodada(antes_g, depois_g, passos) {
     const num = v => typeof v === 'number' && Number.isFinite(v);
     if (!num(antes_g) || antes_g <= 0) throw new ErroDeUso('informe a massa do vidro cheio em gramas');
-    if (!num(depois_g) || depois_g < 0) throw new ErroDeUso('informe a massa depois de rodar a bomba, em gramas');
-    if (!num(passos) || !Number.isInteger(passos) || passos < 1) throw new ErroDeUso('os passos têm de ser um inteiro maior que zero');
+    if (!num(depois_g) || depois_g < 0) throw new ErroDeUso('informe a massa depois de pingar as gotas, em gramas');
+    if (!num(passos) || !Number.isInteger(passos) || passos < 1) throw new ErroDeUso('as gotas (pulsos) têm de ser um número inteiro maior que zero');
     const mg = r3((antes_g - depois_g) * 1000);
     if (mg <= 0) throw new ErroDeUso('o vidro pesou mais depois de dispensar — confira as duas pesagens');
     return { mg, mg_por_passo: r3(mg / passos) };
@@ -54,7 +58,7 @@
     return r3(d);
   }
 
-  /* "20 mg = X passos ±Y": a dose mínima da máquina em passos do fator medido (X arredondado; Y propaga o desvio). */
+  /* "20 mg = X gotas ±Y": a dose mínima da máquina em gotas do fator medido (X arredondado; Y propaga o desvio). */
   function passosDaDose(dose_mg, fator, desvio) {
     if (!(fator > 0)) throw new ErroDeUso('fator de calibração inválido');
     const passos = Math.round(dose_mg / fator);
@@ -73,13 +77,23 @@
     return ref.id === atual.id || (!!ref.cas && ref.cas === atual.cas) || (!!ref.nome && ref.nome === atual.nome);
   }
 
-  /* O que passa a aparecer na tela do canal: passos da dose mínima, massa dispensada no uso típico (com o aviso do
-   * piso de 100 mg) e o estoque quando há densidade medida. `material` é o material do dados.json do canal HOJE. */
+  const pct = n => String(n).replace('.', ',') + '%';
+
+  /* O que passa a aparecer na tela do canal: gotas da dose mínima, massa dispensada no uso típico (com o aviso do
+   * piso de 100 mg) e o estoque. `material` é o material do dados.json do canal HOJE. A massa da gota muda com a
+   * diluição (outro líquido, outra gota): diluição trocada também pede recalibrar. O estoque sai da densidade QUE
+   * ESTÁ NO CANAL (é a que o motor e a pré-checagem usam); a medida que ainda não foi para o canal vem como pendente. */
   function conferencias(entrada, canal, material, dose_minima_mg) {
     const out = { desatualizada: false, fator: entrada.fator_mg_passo, desvio: entrada.desvio_mg_passo, avisos: [] };
     if (material && !materialBate(entrada.material, { id: material.id, nome: material.nome, cas: material.cas })) {
       out.desatualizada = true;
       out.avisos.push(`calibração desatualizada (gravada para ${entrada.material.nome}; recalibre este vidro)`);
+      return out;
+    }
+    const dilGravada = entrada.diluicao_pct;
+    if (typeof dilGravada === 'number' && typeof canal.diluicao_pct === 'number' && Math.abs(dilGravada - canal.diluicao_pct) > 1e-9) {
+      out.desatualizada = true;
+      out.avisos.push(`calibração desatualizada (gravada com o vidro a ${pct(dilGravada)}; agora está a ${pct(canal.diluicao_pct)} — recalibre este vidro)`);
       return out;
     }
     out.passosDose = passosDaDose(dose_minima_mg, entrada.fator_mg_passo, entrada.desvio_mg_passo);
@@ -91,9 +105,11 @@
       out.usoTipico = null;
       out.avisos.push('sem uso típico no catálogo: o piso de 100 mg não é conferível para este material');
     }
-    if (entrada.densidade_g_ml && typeof canal.volume_atual_ml === 'number' && canal.volume_atual_ml >= 0) {
-      out.estoque_g = Math.round((entrada.densidade_g_ml * canal.volume_atual_ml) * 10) / 10;
+    const dCanal = canal.densidade_g_ml, dMedida = entrada.densidade_g_ml;
+    if (dCanal && typeof canal.volume_atual_ml === 'number' && canal.volume_atual_ml >= 0) {
+      out.estoque_g = Math.round((dCanal * canal.volume_atual_ml) * 10) / 10;
     }
+    if (dMedida && !(dCanal && Math.abs(dCanal - dMedida) < 5e-4)) out.densidade_pendente = dMedida;   // medida, mas fora do canal
     return out;
   }
 

@@ -49,9 +49,10 @@
     ler() { try { return JSON.parse(localStorage.getItem(CHAVE_PROPRIA) || 'null'); } catch { return null; } },
     gravar(mapa) { if (mapa === null) localStorage.removeItem(CHAVE_PROPRIA); else localStorage.setItem(CHAVE_PROPRIA, JSON.stringify(mapa)); },
   };
-  const calibracao = Calibracao.criar(lembrar);               // fatores mg/passo e densidades medidas por canal (docs/11 §2)
+  const calibracao = Calibracao.criar(lembrar);               // massa por gota (pulso) e densidade medidas por canal (docs/11 §2)
   const mkt = Site.marketplace(lembrar);                      // os anúncios que este aparelho conhece (SITE-2: começa vazio)
   const vinc = Site.vinculos(lembrar);                        // máquinas vinculadas pelo QR da telinha (F0, docs/11 §1.6)
+  const ipMaq = Site.ipDaMaquina(lembrar);                    // onde a máquina está na rede local (SITE-3: mandar imprimir)
 
   async function api(rota, corpo) {
     if (PESADAS.has(rota)) await new Promise(r => setTimeout(r, 30));
@@ -238,9 +239,11 @@
     const j = await api('/api/ajustar', { maquina, respostas: respostasDaReceita, itens: c.formula, novos: {}, massa_final_g: c.massa_final_g, nome: c.titulo, tecnico: true });
     const x = j.candidato, frasco = frascoRotulo || (ML_DO_FRASCO.has(x.massa_final_g) ? ML_DO_FRASCO.get(x.massa_final_g) + ' ml (' + fmt(x.massa_final_g) + ' g)' : fmt(x.massa_final_g) + ' g');
     const soAromas = x.ingredientes.reduce((s, i) => s + i.gramas, 0);
+    const porque = x.motivos.concat(x.faltando.map(f => 'esta máquina não tem ' + f.nome));   // sem vidro também é motivo
     $('#folha').replaceChildren(
       el('h1', {}, x.titulo),
-      el('p', { class: 'selo ' + (x.valido ? 'pronta' : 'nao') }, x.valido ? 'PRONTA PARA FAZER' : 'NÃO VALIDADA: ' + x.motivos.join('; ')),
+      el('p', { class: 'selo ' + (x.valido ? 'pronta' : 'nao') }, x.valido ? 'PRONTA PARA FAZER'
+        : 'NÃO VALIDADA: ' + (porque.length ? porque.join('; ') : 'o motor não validou esta receita nesta máquina')),
       el('p', {}, 'Máquina: ' + db.maquinas.get(maquina).nome + ' · Frasco: ' + frasco + ' · Concentração: ' + fmt(x.concentracao_pct) + '% · ' + new Date().toLocaleDateString('pt-BR')),
       ...(x.alergias.length ? [el('p', { class: 'selo nao' }, 'ALERGIA DECLARADA nesta receita: ' + x.alergias.join(', '))] : []),
       el('h2', {}, 'Ingredientes'),
@@ -525,7 +528,7 @@
         acab.replaceChildren(!info || !info.acabando ? '' : el('button', { class: 'chip atencao',
           onclick: () => telaReposicao(c) }, 'acabando — ' + Site.textoAcabando(info) + ' · ver ofertas'));
       };
-      const mudaCalib = () => { calib.replaceChildren(blocoCalibracao(c)); mudaAcab(); };
+      const mudaCalib = () => { calib.replaceChildren(blocoCalibracao(c, dens => { c.densidade_g_ml = dens; desenharMapa(j); })); mudaAcab(); };
       mudaCalib();
       const busca = el('input', { type: 'search', placeholder: 'Buscar material (nome ou CAS)', 'aria-label': 'Buscar material do vidro ' + c.canal });
       busca.oninput = async () => {
@@ -591,34 +594,53 @@
   }
 
   // ---------------------------------------------------------------------------------------------- calibrar o vidro (docs/11 §2)
-  /* O fluxo manual: pesar o vidro cheio na balança de 0,01 g, rodar N passos da bomba pelo painel da máquina e pesar de
-   * novo — 2–3 rodadas dão o fator mg/passo com desvio; a proveta (opcional) dá a densidade real. Grava em
-   * perfume.calibracao.v1 por canal, FORA do mapa; a densidade medida preenche o campo do canal pelo mesmo caminho do
-   * preenchimento manual, para o estoque virar conferível. Trocado o material do vidro: a calibração fica desatualizada. */
+  /* O fluxo manual: pesar o vidro cheio na balança de 0,01 g, fazer a máquina pingar N gotas dele e pesar de novo —
+   * 2–3 rodadas dão a massa por gota com desvio; a proveta (opcional) dá a densidade real. A UNIDADE é a da máquina
+   * real: a D1 revisada (docs/03, 03/10) conta gotas e calibra a gota pesando 50 delas; o firmware de hoje dosa por
+   * pulso de válvula ≈ 1 gota (dosagem.cpp, `mg_por_pulso`). Grava em perfume.calibracao.v1 por canal, FORA do mapa; a
+   * densidade medida vai para o campo do canal (o mesmo do preenchimento manual) e, se a máquina já está salva, para a
+   * máquina salva também — é dela que o Imprimir e o motor leem o estoque. Trocado o material ou a diluição do vidro: a
+   * calibração fica desatualizada. */
   const pctPt = n => String(n).replace('.', ',');
   const doseMinimaMg = () => Math.round((db.maquinas.get(Motor.ID_PROPRIA) || db.maquinas.get('mvp-64')).dose_minima_g * 1000);
+  const GOTAS_PADRAO = 50;                                    // a rotina da D1 revisada (docs/03): 50 gotas na balança
 
-  function blocoCalibracao(c) {
+  function blocoCalibracao(c, anotarDensidade) {
     const box = el('div', { class: 'dica' });
     const ent = calibracao.do(Motor.ID_PROPRIA, c.canal);
-    if (!ent) { box.textContent = 'Sem calibração: o fator mg/passo deste vidro ainda não foi medido.'; return box; }
+    if (!ent) { box.textContent = 'Sem calibração: a massa por gota deste vidro ainda não foi medida.'; return box; }
     const mat = c.material_id ? db.materiais.get(c.material_id) : null;
     if (!mat) { box.textContent = 'Calibração gravada para ' + ent.material.nome + ' — escolha o material deste vidro para conferir.'; return box; }
     let conf;
     try { conf = Calibracao.conferencias(ent, c, mat, doseMinimaMg()); }
     catch { box.textContent = 'Calibração ilegível neste navegador — recalibre este vidro.'; return box; }
     if (conf.desatualizada) { box.className = 'falta'; box.textContent = '⚠ ' + conf.avisos[0] + '.'; return box; }
-    const linhas = [el('div', { class: 'ok' }, '✔ Calibrado em ' + data(ent.data) + ': ' + g3(ent.fator_mg_passo) + ' mg/passo'
+    const linhas = [el('div', { class: 'ok' }, '✔ Calibrado em ' + data(ent.data) + ': ' + g3(ent.fator_mg_passo) + ' mg/gota'
       + (ent.desvio_mg_passo === null ? '' : ' ± ' + g3(ent.desvio_mg_passo)))];
     const p = conf.passosDose;
-    linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' passos' + (p.margem === null ? '' : ' ± ' + p.margem)));
+    linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' gotas' + (p.margem === null ? '' : ' ± ' + p.margem)));
     if (conf.usoTipico) linhas.push(el('div', {}, 'No menor uso típico do catálogo (' + pctPt(conf.usoTipico.faixa.min) + '–'
       + pctPt(conf.usoTipico.faixa.max) + '%): ~' + Math.round(conf.usoTipico.dispensado_mg) + ' mg dispensados por lote de '
       + Calibracao.CONCENTRADO_G + ' g'));
     if (typeof conf.estoque_g === 'number') linhas.push(el('div', {}, 'Estoque conferível: restam ~' + fmt(conf.estoque_g) + ' g no vidro'));
+    if (conf.densidade_pendente) linhas.push(el('div', { class: 'falta' }, '⚠ A densidade medida (' + g3(conf.densidade_pendente)
+      + ' g/ml) não está no campo deste vidro: o estoque não é conferido. ',
+    el('button', { class: 'chip atencao', onclick: () => anotarDensidade(conf.densidade_pendente) }, 'Anotar no vidro')));
     conf.avisos.forEach(a => linhas.push(el('div', { class: 'falta' }, '⚠ ' + a + '.')));
     box.replaceChildren(...linhas);
     return box;
+  }
+
+  /* A densidade medida também vai para a máquina SALVA (sem esperar "Usar esta máquina"), mas só no canal que ainda é
+   * aquele vidro: mesmo número, mesmo material, mesma diluição. O resto do rascunho não é gravado por tabela. */
+  async function densidadeNaMaquinaSalva(canal, material_id, diluicao_pct, dens) {
+    const salvo = (await api('/api/mapa', {})).mapa;
+    const k = salvo ? salvo.canais.findIndex(x => x.canal === canal && x.material_id === material_id && x.diluicao_pct === diluicao_pct) : -1;
+    if (k < 0) return { gravou: false, erro: null };
+    const novo = structuredClone(salvo);
+    novo.canais[k].densidade_g_ml = dens;
+    try { await api('/api/mapa/salvar', { mapa: novo }); return { gravou: true, erro: null }; }
+    catch (e) { return { gravou: false, erro: e.message }; }
   }
 
   function telaCalibracao(j, c) {
@@ -634,8 +656,8 @@
     const balanca = el('select', { 'aria-label': 'Resolução da balança', onchange: ajustaBalanca },
       ...[0.01, 0.05, 0.1].map(v => el('option', { value: v, selected: v === 0.01 }, v.toLocaleString('pt-BR') + ' g')));
     const mAntes = el('input', { type: 'number', min: 0, step: 0.01, 'aria-label': 'Massa do vidro cheio, em gramas', placeholder: 'ex. 85,20' });
-    const nPassos = el('input', { type: 'number', min: 1, step: 1, value: 1000, 'aria-label': 'Quantos passos da bomba vão rodar' });
-    const mDepois = el('input', { type: 'number', min: 0, step: 0.01, 'aria-label': 'Massa depois de rodar, em gramas', placeholder: 'ex. 84,20' });
+    const nGotas = el('input', { type: 'number', min: 1, step: 1, value: GOTAS_PADRAO, 'aria-label': 'Quantas gotas (pulsos) a máquina pingou' });
+    const mDepois = el('input', { type: 'number', min: 0, step: 0.01, 'aria-label': 'Massa depois de pingar, em gramas', placeholder: 'ex. 84,90' });
     const proveta = el('input', { type: 'number', min: 0, step: 'any', 'aria-label': 'Volume dispensado na proveta, em ml (opcional)', placeholder: 'opcional' });
     function ajustaBalanca() { mAntes.step = balanca.value; mDepois.step = balanca.value; }
     function registrar() {
@@ -643,28 +665,28 @@
       try {
         const volume = proveta.value === '' ? null : Number(proveta.value);
         if (volume !== null && !(volume > 0)) throw new Calibracao.ErroDeUso('o volume na proveta tem de ser maior que zero');
-        const f = Calibracao.fatorDaRodada(Number(mAntes.value), Number(mDepois.value), Number(nPassos.value));
-        rodadas.push({ antes_g: Number(mAntes.value), depois_g: Number(mDepois.value), passos: Number(nPassos.value), volume_ml: volume,
+        const f = Calibracao.fatorDaRodada(Number(mAntes.value), Number(mDepois.value), Number(nGotas.value));
+        rodadas.push({ antes_g: Number(mAntes.value), depois_g: Number(mDepois.value), passos: Number(nGotas.value), volume_ml: volume,
           mg: f.mg, mg_por_passo: f.mg_por_passo });
         desenharRodadas();
       } catch (e) { msg.textContent = e.message; }
     }
     const salvarBt = el('button', { disabled: true, onclick: salvar }, 'Salvar calibração');
     function desenharRodadas() {
-      const linhas = rodadas.map((r, i) => el('div', {}, 'Rodada ' + (i + 1) + ': ' + g3(r.mg / 1000) + ' g em ' + r.passos + ' passos = '
-        + g3(r.mg_por_passo) + ' mg/passo' + (r.volume_ml ? ' · proveta ' + r.volume_ml + ' ml → ' + g3(r.mg / 1000 / r.volume_ml) + ' g/ml' : '')));
+      const linhas = rodadas.map((r, i) => el('div', {}, 'Rodada ' + (i + 1) + ': ' + g3(r.mg / 1000) + ' g em ' + r.passos + ' gotas = '
+        + g3(r.mg_por_passo) + ' mg/gota' + (r.volume_ml ? ' · proveta ' + r.volume_ml + ' ml → ' + g3(r.mg / 1000 / r.volume_ml) + ' g/ml' : '')));
       if (rodadas.length) {
         const { media, desvio } = Calibracao.mediaDesvio(rodadas.map(r => r.mg_por_passo));
         const p = Calibracao.passosDaDose(doseMinimaMg(), media, desvio);
-        linhas.push(el('div', { class: 'ok' }, 'Média ' + g3(media) + ' mg/passo' + (desvio === null ? ' (uma rodada: ainda sem desvio)' : ' ± ' + g3(desvio))));
-        linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' passos' + (p.margem === null ? '' : ' ± ' + p.margem)));
-        linhas.push(el('div', { class: 'dica' }, 'SUGESTÃO de passos para a próxima rodada (~1 g): ' + Math.round(1000 / media)
+        linhas.push(el('div', { class: 'ok' }, 'Média ' + g3(media) + ' mg/gota' + (desvio === null ? ' (uma rodada: ainda sem desvio)' : ' ± ' + g3(desvio))));
+        linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' gotas' + (p.margem === null ? '' : ' ± ' + p.margem)));
+        linhas.push(el('div', { class: 'dica' }, 'SUGESTÃO de gotas para a próxima rodada (~1 g): ' + Math.round(1000 / media)
           + ' — chute de partida, ajuste como preferir.'));
       }
       lista.replaceChildren(...linhas);
       salvarBt.disabled = !rodadas.length;
     }
-    function salvar() {
+    async function salvar() {
       msg.textContent = '';
       try {
         const { media, desvio } = Calibracao.mediaDesvio(rodadas.map(r => r.mg_por_passo));
@@ -672,8 +694,14 @@
         calibracao.salvar({ maquina: Motor.ID_PROPRIA, canal: c.canal, diluicao_pct: c.diluicao_pct,
           material: { id: mat.id, nome: mat.nome, cas: mat.cas }, rodadas,
           fator_mg_passo: media, desvio_mg_passo: desvio, densidade_g_ml: dens, data: new Date().toISOString() });
-        if (dens !== null) c.densidade_g_ml = dens;          // mesmo caminho do preenchimento manual: o validador do mapa passa a conferir o estoque
-        aviso('Calibração salva para o vidro nº' + c.canal + (dens === null ? '' : ' (densidade ' + g3(dens) + ' g/ml anotada no canal)'), 6000);
+        let naSalva = { gravou: false, erro: null };
+        if (dens !== null) {
+          c.densidade_g_ml = dens;                             // mesmo caminho do preenchimento manual: o validador do mapa passa a conferir o estoque
+          naSalva = await densidadeNaMaquinaSalva(c.canal, mat.id, c.diluicao_pct, dens);
+        }
+        aviso('Calibração salva para o vidro nº' + c.canal + (dens === null ? '' : ' (densidade ' + g3(dens) + ' g/ml anotada no canal'
+          + (naSalva.gravou ? ' e na máquina salva' : '') + ')')
+          + (naSalva.erro ? '. Não consegui gravar a densidade na máquina salva (' + naSalva.erro + '): toque em "Usar esta máquina".' : ''), 6000);
         desenharMapa(j);
       } catch (e) { msg.textContent = e.message; }
     }
@@ -688,16 +716,17 @@
       el('div', { class: 'card' }, el('h2', {}, 'Calibrar vidro nº' + c.canal + ' — ' + mat.nome + ' (' + fmt(c.diluicao_pct) + '%)'),
         el('p', { class: 'dica' }, 'Padrões assumidos (docs/11 §2): balança de resolução ', balanca,
           ' · dose por massa (a proveta é opcional) · calibração por canal, feita na montagem e conferida na troca de vidro.'),
-        ja ? el('p', { class: 'dica' }, 'Já existe calibração: ' + g3(ja.fator_mg_passo) + ' mg/passo'
+        ja ? el('p', { class: 'dica' }, 'Já existe calibração: ' + g3(ja.fator_mg_passo) + ' mg/gota'
           + (ja.desvio_mg_passo === null ? '' : ' ± ' + g3(ja.desvio_mg_passo)) + ' (' + data(ja.data) + '). Salvar por cima substitui.') : '',
         el('div', { class: 'vidro' },
           el('div', { class: 'linha' }, el('label', { class: 'dica' }, '1. Vidro cheio ', mAntes, ' g')),
-          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '2. Rodar ', nPassos, ' passos da bomba pelo painel da máquina')),
+          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '2. A máquina pinga ', nGotas, ' gotas (pulsos) deste vidro')),
           el('div', { class: 'linha' }, el('label', { class: 'dica' }, '3. Pesar de novo ', mDepois, ' g')),
           el('div', { class: 'linha' }, el('label', { class: 'dica' }, '(opcional) Proveta ', proveta, ' ml')),
           el('div', { class: 'linha' }, el('button', { onclick: registrar }, 'Registrar rodada'))),
         msg, lista,
-        el('p', { class: 'dica' }, 'Faça 2–3 rodadas: o desvio entre elas é o que aparece depois do ±. Os 1000 passos do campo são um chute de partida (algo entre 0,5 e 2 g na maioria dos vidros).'),
+        el('p', { class: 'dica' }, 'Faça 2–3 rodadas: o desvio entre elas é o que aparece depois do ±. As ' + GOTAS_PADRAO
+          + ' gotas do campo são a rotina da D1 revisada (docs/03: contar 50 gotas e pesar); no firmware de hoje cada pulso da válvula é ~1 gota.'),
         el('div', { class: 'linha' }, salvarBt, ja ? apagarBt : '')));
   }
 
@@ -741,7 +770,7 @@
           await carregarBiblioteca();
           itens = (q.length < 2 ? [] : db.biblioteca.acordes.map((a, i) => ({ i, nome: a[1], tier: a[2] }))
             .filter(a => semAcento(a.nome).includes(q)).slice(0, 30))
-            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · tier ' + a.tier }));
+            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · qualidade ' + a.tier }));
         }
       } catch (e) {
         if (minha !== vez) return;
@@ -783,8 +812,7 @@
     arquivo.onchange = async () => {
       msgs.textContent = '';
       try {
-        const a = Site.doArquivo(JSON.parse(await arquivo.files[0].text()));
-        if (!a) throw new Error('este arquivo não é um anúncio (formato ' + Site.FORMATO_ANUNCIO + ')');
+        const a = Site.importar(JSON.parse(await arquivo.files[0].text()), db);   // forma, materiais religados ao catálogo, id novo
         mkt.adicionar(a);
         aviso('Anúncio "' + a.nome + '" importado para o marketplace.', 5000);
       } catch (e) { msgs.textContent = e instanceof SyntaxError ? 'Esse arquivo não é um anúncio.' : e.message; }
@@ -819,10 +847,11 @@
     return el('div', { class: 'vidro' },
       el('div', { class: 'linha' }, el('h2', { style: 'margin:0;flex:1' }, a.nome),
         el('span', { class: 'badge' }, Site.ehGratis(a) ? 'grátis — compartilhado' : Site.textoPreco(a))),
-      el('p', { class: 'dica' }, 'por ' + (a.autor || 'autor não assinado') + ' · publicado em ' + data(a.criada_em)),
+      el('p', { class: 'dica' }, 'por ' + (a.autor || 'autor não assinado') + ' · '
+        + (Site.dataValida(a.criada_em) ? 'publicado em ' + data(a.criada_em) : 'sem data de publicação')),
       ...(a.descricao ? [el('p', { class: 'dica' }, a.descricao)] : []),
       ...(a.formula.piramide || []).map(n => el('p', { class: 'dica' }, el('b', {}, n.nivel + ': '), n.nomes.join(', '))),
-      el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(a.lote_ref_ml) + ' ml'),
+      el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(Imprimir.mlParaCima(a.lote_ref_ml || 0)) + ' ml'),
         ' — na máquina de quem imprime pode mudar (as diluições dos vidros dela mudam o lote)'),
       el('p', { class: 'dica' }, Site.TEXTO_SPLIT + '. ' + Site.TEXTO_GATEWAY + '.'),
       el('div', { class: 'linha' },
@@ -859,7 +888,7 @@
           await carregarBiblioteca();
           itens = (q.length < 2 ? [] : db.biblioteca.acordes.map((a, i) => ({ i, nome: a[1], tier: a[2] }))
             .filter(a => semAcento(a.nome).includes(q)).slice(0, 30))
-            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · tier ' + a.tier }));
+            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · qualidade ' + a.tier }));
         }
       } catch (e) {
         if (minha !== vez) return;
@@ -903,8 +932,11 @@
         el('div', { class: 'card' }, el('h2', {}, f.titulo), el('p', { class: 'falta' }, f.aviso)));
       return;
     }
-    const lote = Imprimir.loteMinimo(db, maquina, f.itens);
+    const lote = Imprimir.loteMinimo(db, maquina, f.itens), loteRef = Imprimir.mlParaCima(lote.ml);   // a MESMA regra no formulário e no cartão
     const massaRef = f.fonte === 'receitas' ? f.massa_final_g : 30 * Imprimir.DENSIDADE_DECLARADA;      // a fórmula do anúncio viaja num lote de referência de 30 ml
+    const maqRef = db.maquinas.get(maquina), mlMax = maqRef.lote_max_g / Imprimir.DENSIDADE_DECLARADA;   // o que a máquina de referência dosa num lote
+    const incompleta = (f.sumidos || []).length ? 'Esta receita tem material fora do catálogo deste app (' + f.sumidos.join(', ')
+      + '): publicada, sairia pela metade. Abra a receita numa versão do app que o conheça, ou escolha outra fórmula.' : '';
     const msg = el('div', { class: 'erro' });
     const nome = el('input', { type: 'text', value: f.titulo.slice(0, 80), 'aria-label': 'Nome do anúncio', style: 'width:100%' });
     const descricao = el('textarea', { rows: 2, 'aria-label': 'Descrição', placeholder: 'O que quem cheirar vai encontrar (opcional)' });
@@ -912,30 +944,35 @@
     const pInicial = el('input', { type: 'number', min: 0, step: 0.01, value: Site.PRECO_INICIAL_REF.toFixed(2), 'aria-label': 'Preço inicial (R$)' });
     const pMl = el('input', { type: 'number', min: 0, step: 0.01, value: Site.PRECO_POR_ML_REF.toFixed(2), 'aria-label': 'Preço por ml adicional (R$)' });
     const previaBox = el('div');
-    const curva = () => ({ preco_inicial: Number(pInicial.value), preco_por_ml: Number(pMl.value) });
+    const curva = () => ({ preco_inicial: Site.lerPreco(pInicial.value, 'preço inicial'), preco_por_ml: Site.lerPreco(pMl.value, 'preço por ml adicional') });
     function desenharPrevia() {
       let linhas;
       try {
-        linhas = Site.previa(curva(), Imprimir.VOLUMES_ML);
-        pInicial.classList.remove('ruim'); pMl.classList.remove('ruim');
+        linhas = Site.previa(curva(), Imprimir.VOLUMES_ML, mlMax);
       } catch (e) { previaBox.replaceChildren(el('p', { class: 'falta' }, e.message)); return; }
+      const acima = linhas.filter(l => l.acima);
       previaBox.replaceChildren(el('table', {},
         el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Volume'), el('th', { scope: 'col' }, 'Preço da cópia'), el('th', { scope: 'col' }, 'Você recebe'))),
-        el('tbody', {}, ...linhas.map(l => el('tr', {}, el('td', {}, l.ml + ' ml'), el('td', {}, brl(l.preco)), el('td', {}, brl(l.autor)))))));
+        el('tbody', {}, ...linhas.map(l => el('tr', { class: l.acima ? 'acima-do-lote' : '' },
+          el('td', {}, l.ml + ' ml', ...(l.acima ? [el('small', { class: 'falta' }, ' ⚠ acima do lote')] : [])),
+          el('td', {}, brl(l.preco)), el('td', {}, brl(l.autor)))))),
+        ...(acima.length ? [el('p', { class: 'dica' }, '⚠ A ' + maqRef.nome + ' dosa até ' + fmt(mlMax) + ' ml por lote (' + fmt(maqRef.lote_max_g)
+          + ' g): de ' + acima[0].ml + ' ml para cima ela não imprime — quem comprar esses volumes precisa de máquina com lote maior.')] : []));
     }
     [pInicial, pMl].forEach(i => i.oninput = desenharPrevia);
     desenharPrevia();
-    const publicar = el('button', { onclick: () => {
+    const publicar = el('button', { disabled: !!incompleta, onclick: () => {
       msg.textContent = '';
       try {
+        const precos = curva();                                  // vazio é erro com o nome do campo; zero só quando digitado
         const anuncio = Site.criar({
           formula: { titulo: f.titulo, massa_final_g: massaRef, concentracao_pct: f.concentracao_pct || null,
             itens: f.itens.map(i => ({ id: i.material_id, cas: db.materiais.get(i.material_id).cas, nome: db.materiais.get(i.material_id).nome,
               gramas: Motor.numeros.pyround(i.fracao * massaRef, 4) })),
             piramide: Site.piramideDe(db, f.itens.map(i => ({ id: i.material_id }))) },
           nome: nome.value, descricao: descricao.value, autor: autor.value,
-          preco_inicial: Number(pInicial.value), preco_por_ml: Number(pMl.value),
-          lote_ref_ml: Math.ceil(lote.ml * 10) / 10, lote_ref_maquina: db.maquinas.get(maquina).nome,
+          preco_inicial: precos.preco_inicial, preco_por_ml: precos.preco_por_ml,
+          lote_ref_ml: loteRef, lote_ref_maquina: maqRef.nome,
           criada_em: new Date().toISOString() });
         mkt.adicionar(anuncio);
         aviso('Anúncio publicado no marketplace local: ' + anuncio.nome + '.', 6000);
@@ -945,17 +982,19 @@
     } }, 'Publicar');
     t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaPublicarFontes }, '← Escolher outra fórmula')),
       el('div', { class: 'card' }, el('h2', {}, 'Publicar no marketplace'),
-        el('p', { class: 'dica' }, 'Quem compra recebe a fórmula junto (sem DRM local) e imprime uma cópia de até 100 ml na própria máquina.'),
+        el('p', { class: 'dica' }, 'Quem compra recebe a fórmula junto (sem DRM local) e imprime uma cópia de até 100 ml na própria máquina'
+          + ' — a ' + maqRef.nome + ' de hoje dosa até ' + fmt(mlMax) + ' ml por lote.'),
+        ...(incompleta ? [el('p', { class: 'falta' }, incompleta)] : []),
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Nome ', nome)),
         descricao,
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Autor ', autor)),
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Preço inicial (R$) ', pInicial),
           el('label', { class: 'dica' }, 'Preço por ml adicional (R$) ', pMl)),
-        el('p', { class: 'dica' }, 'Defaults: ' + Site.ROTULO_PRECO_REF + '. O preço pode ser ZERO — compartilhar.'),
+        el('p', { class: 'dica' }, 'Valores iniciais: ' + Site.ROTULO_PRECO_REF + '. O preço pode ser ZERO — compartilhar.'),
         el('p', { class: 'dica' }, el('b', {}, Site.TEXTO_SPLIT), '.'),
         el('details', { open: true }, el('summary', {}, 'Prévia dos preços'), previaBox),
-        el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(lote.ml) + ' ml'),
-          ' calculado contra a ' + db.maquinas.get(maquina).nome + ' — na máquina de quem imprime pode mudar (as diluições dos vidros dela mudam o lote).'),
+        el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(loteRef) + ' ml'),
+          ' calculado contra a ' + maqRef.nome + ' — na máquina de quem imprime pode mudar (as diluições dos vidros dela mudam o lote).'),
         msg,
         el('div', { class: 'linha', style: 'margin-top:8px' }, publicar)));
   }
@@ -964,14 +1003,12 @@
     if (imp.fonte === 'anuncio') {                             // a fórmula EMBUTIDA do anúncio (decisão 9): gramas sobre o lote de referência
       const a = mkt.achar(imp.id);
       if (!a) throw new Motor.ErroDeUso('anúncio não encontrado — ele pode ter sido removido');
-      const f = Imprimir.daReceita(Object.fromEntries(a.formula.itens.map(i => [i.id, i.gramas])), a.formula.massa_final_g, a.nome, null, {});
-      return { ...f, fonte: 'anuncio', anuncio: a };
+      const r = Site.religarItens(db, a.formula.itens);         // os ids do anúncio podem ser de outro dados.json: religa como as receitas
+      const f = Imprimir.daReceita(Object.fromEntries(r.itens.map(i => [i.id, i.gramas])), a.formula.massa_final_g, a.nome, null, {});
+      return { ...f, fonte: 'anuncio', anuncio: a, sumidos: r.sumidos };
     }
-    if (imp.fonte === 'receitas') {
-      const j = await api('/api/receita', { id: imp.id, maquina, tecnico: false }), r = j.receita;
-      const f = Imprimir.daReceita(Object.fromEntries(r.itens.map(i => [i.id, i.gramas])), r.massa_final_g, r.nome, r.nota, r.respostas);
-      f.faltando = j.candidato.faltando.map(x => x.nome);      // o que a máquina ativa não tem, como no "Abrir" da receita
-      return f;
+    if (imp.fonte === 'receitas') {                            // o candidato do motor traz a fórmula religada e a massa (o resumo não traz)
+      return Imprimir.daReceitaSalva(db, await api('/api/receita', { id: imp.id, maquina, tecnico: false }));
     }
     if (imp.fonte === 'acordes') return Imprimir.comoProduto(Imprimir.doAcorde(db, imp.id, maquina));
     await carregarBiblioteca();
@@ -1017,6 +1054,15 @@
         JSON.stringify(Imprimir.arquivoDaFormula(db, f, g, new Date().toISOString()), null, 1));
       msgs.textContent = 'Fórmula exportada — quem imprime recebe a fórmula.';
     } }, 'Exportar fórmula (.json)');
+    /* SITE-3: a página da própria máquina abre numa aba nova com a fórmula no endereço (https não fala com http por
+     * fetch; abrir uma página pode). O que vai é a dosagem vidro a vidro que a conferência acima validou. */
+    const btMaquina = el('button', { class: 'sec', disabled: !pch || !pch.ok, onclick: () => {
+      const ender = ipMaq.ler();
+      if (!ender) { msgs.textContent = 'Primeiro salve o IP da máquina em Mapa da máquina → Máquina vinculada (o número aparece na telinha).'; return; }
+      const url = Site.urlImprimir(ender, Site.pacoteDaMaquina(f.titulo + ' · ' + ml + ' ml', g, pch.linhas));
+      window.open(url, '_blank', 'noopener');
+      msgs.textContent = 'Abri a página da máquina (' + ender + ') numa aba nova: confira lá e toque em "Imprimir agora".';
+    } }, 'Mandar para a máquina');
     const rotFonte = { receitas: 'minha receita', acordes: 'acorde do banco', biblioteca: 'acorde da biblioteca', anuncio: 'anúncio do marketplace' }[f.fonte];
     const porLote = sel.opcoes.find(o => o.desabilitada === 'lote'), porMaquina = sel.opcoes.find(o => o.desabilitada === 'maquina');
     t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Escolher outra fórmula')),
@@ -1025,7 +1071,8 @@
           f.fonte === 'anuncio' ? el('span', { class: 'badge' }, Site.ehGratis(f.anuncio) ? 'grátis — compartilhado' : Site.textoPreco(f.anuncio))
             : el('span', { class: 'badge' }, 'grátis')),
         ...(f.fonte === 'anuncio' ? [el('p', { class: 'dica' }, 'Anúncio de ' + (f.anuncio.autor || 'autor não assinado')
-          + ' · o anúncio declara lote mínimo de referência de ' + fmt(f.anuncio.lote_ref_ml) + ' ml — na sua máquina vale o calculado acima.')] : []),
+          + ' · o anúncio declara lote mínimo de referência de ' + fmt(Imprimir.mlParaCima(f.anuncio.lote_ref_ml || 0))
+          + ' ml — na sua máquina vale o calculado abaixo, em "Volume do frasco".')] : []),
         el('table', {}, el('tbody', {}, ...f.itens.map(i => el('tr', {},
           el('td', {}, Motor.nome_curto(db.materiais.get(i.material_id).nome, 46)), el('td', {}, fmt(i.fracao * 100) + '%'))))),
         ...(f.concentracao_pct ? [el('p', { class: 'dica' }, 'Acorde dosado a ' + fmt(f.concentracao_pct)
@@ -1035,7 +1082,7 @@
         ...f.escolhas.map(e => el('p', { class: 'dica' }, 'Escolha feita: ' + e.item + ' → ' + e.opcoes[0] + (e.opcoes.length > 1 ? ' (outras opções: ' + e.opcoes.slice(1).join(', ') + ')' : '') + '.')),
         ...(f.faltando.length ? [el('p', { class: 'falta' }, 'Fora desta máquina: ' + f.faltando.join(', ') + ' — com troca/ajuste o lote muda.')] : [])),
       el('div', { class: 'card' }, el('h2', {}, 'Volume do frasco'),
-        ...(sel.lote.limitante ? [el('p', { class: 'dica' }, 'Lote mínimo desta fórmula nesta máquina: ' + fmt(sel.lote.ml) + ' ml.')] : []),
+        ...(sel.lote.limitante ? [el('p', { class: 'dica' }, 'Lote mínimo desta fórmula nesta máquina: ' + fmt(Imprimir.mlParaCima(sel.lote.ml)) + ' ml.')] : []),
         ...(maquina === Motor.ID_PROPRIA ? [] : [el('p', { class: 'dica' }, '⚠ ' + Imprimir.avisoReferencia(db, maquina))]),
         el('div', { class: 'linha notas', style: 'margin-top:6px' },
           ...sel.opcoes.map(o => el('button', { class: o.ml === ml ? 'sel' : 'sec', disabled: !!o.desabilitada, title: o.motivo || '',
@@ -1045,7 +1092,7 @@
       el('div', { class: 'card' }, el('h2', {}, 'Conferência antes de imprimir'),
         ml === null ? el('p', { class: 'falta' }, 'Nenhum volume da grade dosa nesta máquina.')
         : [el('p', { class: 'dica' }, 'O que esta impressão usa de cada vidro da ' + db.maquinas.get(maquina).nome + ' para '
-            + ml + ' ml (' + fmt(g) + ' g — densidade declarada ' + fmt(Imprimir.DENSIDADE_DECLARADA) + ' g/ml):'),
+            + ml + ' ml (' + fmt(g) + ' g — densidade declarada ' + Imprimir.DENSIDADE_DECLARADA.toLocaleString('pt-BR') + ' g/ml, a mesma da conta):'),
           el('table', {}, el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Vidro'), el('th', { scope: 'col' }, 'Material'),
             el('th', { scope: 'col' }, 'No vidro'), el('th', { scope: 'col' }, 'Vai usar'))),
             el('tbody', {}, ...pch.linhas.map(l => el('tr', {}, el('td', {}, String(l.canal)), el('td', {}, l.material),
@@ -1053,11 +1100,12 @@
           ...(pch.ok ? [el('p', { class: 'ok' }, '✔ Os vidros cobrem esta impressão.')] : pch.bloqueios.map(b => el('p', { class: 'falta' }, '✕ ' + b))),
           ...pch.avisos.map(a => el('p', { class: 'dica' }, '⚠ ' + a))]),
       el('div', { class: 'card' }, el('h2', {}, 'Imprimir'),
-        el('p', { class: 'dica' }, pch && pch.ok ? 'Tudo conferido: a folha traz a fórmula e a dosagem vidro por vidro.'
-          : 'O botão liga quando a conferência acima passar.'),
+        el('p', { class: 'dica' }, pch && pch.ok ? 'Tudo conferido: a folha traz a fórmula e a dosagem vidro por vidro; '
+          + '"Mandar para a máquina" abre a página da máquina (mesma rede Wi-Fi) com esta dosagem.'
+          : 'Os botões ligam quando a conferência acima passar.'),
         ...(precoCopia !== null ? [el('p', {}, 'Preço desta cópia (' + ml + ' ml): ', el('b', {}, brl(precoCopia)),
           el('span', { class: 'dica' }, ' — ' + Site.TEXTO_SPLIT + '; ' + Site.TEXTO_GATEWAY + '.'))] : []),
-        el('div', { class: 'linha' }, btFolha, btExportar,
+        el('div', { class: 'linha' }, btFolha, btMaquina, btExportar,
           f.fonte !== 'anuncio' ? el('button', { class: 'sec', onclick: () => { impModo = 'publicar'; telaPublicarFormula(); } }, 'Publicar no marketplace') : ''), msgs));
   }
 
@@ -1079,11 +1127,15 @@
         el('p', {}, el('span', { class: 'chip atencao' }, 'acabando'), ' ', Site.textoAcabando(info) + '.'),
         info.teorico ? el('p', { class: 'dica' }, 'Estoque teórico: este vidro não tem densidade cadastrada — calibre o vidro para conferir em gramas.') : '',
         el('p', { class: 'dica' }, 'Sugestão: 1 frasco. Compra manual — o app não fecha pedido nem paga por você; parceria formal com as lojas é pendência.'),
+        ...(ofertas.length > 1 ? [el('p', { class: 'dica' }, 'Ordem: em estoque primeiro; o preço só se compara por g ou por ml entre ofertas da mesma unidade e diluição — tamanhos diferentes não se comparam pelo preço do frasco.')] : []),
         ...(ofertas.length ? ofertas.map(o => el('div', { class: 'vidro' },
             el('div', { class: 'linha' }, el('b', { style: 'flex:1' }, o.loja),
               o.estoque ? el('span', { class: 'chip ok' }, 'em estoque') : el('span', { class: 'chip atencao' }, 'estoque não conferido')),
             el('p', { class: 'dica' }, [o.preco === null || o.preco === undefined ? null : 'preço visto: ' + brl(o.preco),
-              o.tamanho, o.diluicao ? 'diluição ' + o.diluicao : null].filter(Boolean).join(' · ') || 'sem preço anotado na coleta'),
+              o.tamanho, o.por_unidade ? brl(o.por_unidade.valor) + '/' + o.por_unidade.unidade : null,
+              o.diluicao ? 'diluição ' + o.diluicao : null].filter(Boolean).join(' · ') || 'sem preço anotado na coleta'),
+            el('p', { class: 'dica' }, o.coletado_em ? 'visto em ' + o.coletado_em.slice(0, 10).split('-').reverse().join('/')   // a data da coleta: preço e estoque envelhecem
+              : 'data da coleta não registrada neste app — atualize-o para ver quando o preço foi visto'),
             ...(o.url ? [el('div', { class: 'linha' }, el('a', { href: Site.carrinho(o), target: '_blank', rel: 'noopener' },
               o.variante ? 'Comprar 1 frasco (carrinho ' + o.loja + ')' : 'Ver produto na ' + o.loja))] : [])))
           : [el('p', { class: 'falta' }, 'Nenhuma loja da coleta tem oferta para este material ainda.')])));
@@ -1098,7 +1150,7 @@
     const box = el('div', { class: 'card' }), msg = el('div', { class: 'erro' });
     const codigo = el('input', { type: 'text', placeholder: 'perfume://vincular?d=ESP32-xxxx&c=123456', 'aria-label': 'Código de vínculo da telinha', style: 'width:100%' });
     const nome = el('input', { type: 'text', placeholder: 'nome desta máquina (opcional)', 'aria-label': 'Nome da máquina vinculada', style: 'width:100%' });
-    const ip = el('input', { type: 'text', placeholder: '192.168.0.20', 'aria-label': 'IP da máquina na rede local' });
+    const ip = el('input', { type: 'text', placeholder: '192.168.0.42', value: ipMaq.ler() || '', 'aria-label': 'IP da máquina na rede local' });
     const status = el('p', { class: 'dica', role: 'status' });
     function desenhar() {
       box.replaceChildren(el('h2', {}, 'Máquina vinculada'),
@@ -1119,6 +1171,14 @@
           el('span', { style: 'flex:1' }, el('b', {}, v.nome), ' ', el('span', { class: 'dica' }, v.dispositivo + ' · desde ' + data(v.vinculado_em))),
           el('button', { class: 'sec', onclick: () => { vinc.revogar(v.id); desenhar(); } }, 'Revogar'))),
         el('div', { class: 'linha', style: 'margin-top:6px' }, el('label', { class: 'dica' }, 'IP na rede local ', ip),
+          el('button', { class: 'sec', onclick: () => {
+            try {
+              const e = ipMaq.gravar(ip.value);
+              ip.value = e;
+              status.className = 'ok';
+              status.textContent = '✔ IP salvo: "Mandar para a máquina", na aba Imprimir, abre http://' + e + '/imprimir.';
+            } catch (err) { status.className = 'falta'; status.textContent = err.message; }
+          } }, 'Salvar IP'),
           el('button', { class: 'sec', onclick: () => testarConexao(ip.value, status) }, 'Testar conexão')),
         status);
     }
@@ -1149,12 +1209,20 @@
     } catch (e) { aviso('Não consegui abrir a câmera (' + e.message + ') — cole o código à mão.', 6000); }
   }
 
-  /* GET http://<ip>/api/status com timeout curto. De página https o navegador bloqueia http (mixed content):
-   * aviso de rede, não erro do app — o resto continua offline como sempre. */
+  /* "Testar conexão". De página https (o app no Pages) o navegador BLOQUEIA o fetch para http (mixed content): abre
+   * a página da própria máquina numa aba nova — ela mostra o estado. De página http (app servido na rede local) dá
+   * para consultar GET /api/status direto, com timeout curto. Falha de rede é AVISO, nunca erro do app. */
   async function testarConexao(ipTexto, status) {
-    const bruto = (ipTexto || '').trim();
-    const url = /^https?:\/\//.test(bruto) ? bruto : (/^\d+(\.\d+){3}$/.test(bruto) ? 'http://' + bruto + '/api/status' : null);
-    if (!url) { status.className = 'falta'; status.textContent = 'Digite o IP (ex. 192.168.0.20) ou a URL completa.'; return; }
+    const ender = Site.enderecoDaMaquina(ipTexto);
+    if (!ender) { status.className = 'falta'; status.textContent = 'Digite o IP que a telinha da máquina mostra (ex. 192.168.0.42).'; return; }
+    if (location.protocol === 'https:') {
+      window.open(Site.urlDaMaquina(ender), '_blank', 'noopener');
+      status.className = 'dica';
+      status.textContent = 'Abri a página da máquina (' + ender + ') numa aba nova: se ela mostrar o estado, a conexão está boa. '
+        + 'Este site é https e o navegador não deixa ele consultar a máquina direto — a página dela pode.';
+      return;
+    }
+    const url = 'http://' + ender + '/api/status';
     status.className = 'dica'; status.textContent = 'Testando ' + url + '…';
     const Abortar = new AbortController();
     const timer = setTimeout(() => Abortar.abort(), 3500);
@@ -1166,10 +1234,8 @@
         + (j.itens_totais ? ' · item ' + j.item_atual + '/' + j.itens_totais : '') + ' · ligada há ' + fmt(Math.round((j.uptime_s || 0) / 60)) + ' min';
     } catch (e) {
       status.className = 'falta';
-      status.textContent = 'Não chegou ao ' + url + ' ('
-        + (e.name === 'AbortError' ? 'tempo esgotado — 3,5 s'
-          : location.protocol === 'https:' && url.startsWith('http:') ? 'página https não acessa http: mixed content do navegador'
-          : e.message) + '). Confira o IP e se o celular está na MESMA rede da máquina — o app segue funcionando offline.';
+      status.textContent = 'Não chegou ao ' + url + ' (' + (e.name === 'AbortError' ? 'tempo esgotado — 3,5 s' : e.message)
+        + '). Confira o IP e se o celular está na MESMA rede da máquina — o app segue funcionando offline.';
     } finally { clearTimeout(timer); }
   }
 

@@ -16,13 +16,20 @@
     --fundo: #0B0E14; --pagina: #05070B;
     --cartao: #161B26; --texto: #E8ECF4; --fraco: #8B93A7;
     --destaque: #5B8DEF; --ok: #39C48F; --erro: #E5484D;
-    --borda: #232A3A; --chip: #1C2332;
+    --borda: #232A3A; --chip: #1C2332; --trilho: #242B3A;
+    /* selos de estado = mesmas cores do firmware (aplicacao.cpp, struct Selo) */
+    --selo-ok-ponto: #39C48F;   --selo-ok-fundo: #1C3939;   --selo-ok-txt: #39C48F;
+    --selo-dos-ponto: #F5A524;  --selo-dos-fundo: #3E3426;  --selo-dos-txt: #F5A524;
+    --selo-erro-ponto: #E5484D; --selo-erro-fundo: #3B232D; --selo-erro-txt: #FF7A7E;
   }
   [data-tema="claro"] {
     --fundo: #F2F4F8; --pagina: #E4E8EF;
     --cartao: #FFFFFF; --texto: #14181F; --fraco: #5C6470;
     --destaque: #2F6BDE; --ok: #0E8A5F; --erro: #C13A3F;
-    --borda: #D5DAE3; --chip: #EDF0F5;
+    --borda: #D5DAE3; --chip: #EDF0F5; --trilho: #E2E7EF;
+    --selo-ok-ponto: #0E8A5F;   --selo-ok-fundo: #DDEFE9;   --selo-ok-txt: #0A6847;
+    --selo-dos-ponto: #D97706;  --selo-dos-fundo: #F9E9D7;  --selo-dos-txt: #92400E;
+    --selo-erro-ponto: #C13A3F; --selo-erro-fundo: #F6E3E4; --selo-erro-txt: #A32A2F;
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
@@ -69,6 +76,7 @@
     font-size: 15px; font-weight: 700;
   }
   .barra-topo .dir { position: absolute; right: 12px; color: var(--fraco); font-size: 10.5px; font-weight: 500; }
+  .barra-topo .esq { position: absolute; left: 12px; color: var(--destaque); font-size: 12px; font-weight: 600; cursor: pointer; }
   .corpo { height: 276px; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
 
   .grade-botoes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
@@ -92,9 +100,61 @@
   .rodape.ok { color: var(--ok); font-weight: 600; }
   .rodape.erro { color: var(--erro); font-weight: 600; }
 
-  .barra-prog { height: 20px; border-radius: 10px; background: var(--chip); overflow: hidden; border: 1px solid var(--borda); }
-  .barra-prog > div { height: 100%; background: linear-gradient(90deg, var(--destaque), #7FA8F5); width: 0%; transition: width .3s; }
-  [data-tema="claro"] .barra-prog > div { background: linear-gradient(90deg, var(--destaque), #6C97E8); }
+  .barra-prog { height: 32px; border-radius: 16px; background: var(--trilho); overflow: hidden; margin-top: 5px; flex: none; }
+  .barra-prog > div { height: 100%; border-radius: 16px; background: var(--destaque); width: 0%; transition: width .3s; }
+
+  /* ---- textos de linha (mesmas 2 fontes do aparelho: ~14 px e ~24 px) ---- */
+  .rotulo { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--fraco); white-space: nowrap; flex: none; }
+  .corta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .det { white-space: nowrap; flex: none; color: var(--fraco); }
+  .det::before { content: "·"; margin: 0 7px; color: var(--fraco); font-weight: 700; }
+  .fraco { color: var(--fraco); }
+  .forte { color: var(--texto); font-weight: 600; }
+  .ok-txt { color: var(--ok); font-weight: 700; }
+  .erro-txt { color: var(--erro); font-weight: 600; }
+  .dir { margin-left: auto; padding-left: 12px; color: var(--fraco); white-space: nowrap; flex: none; }
+  .linha { display: flex; align-items: center; min-width: 0; font-size: 13.5px; }
+  .rodape-linha { margin-top: auto; height: 30px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fraco); font-size: 12.5px; }
+  .rodape-linha .det::before { margin: 0 8px; }
+
+  /* ---- selo de estado (menu e Status): verde pronta · âmbar dosando · vermelho erro ---- */
+  .selo { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 14px 0 12px; align-self: flex-start;
+          border-radius: 999px; font-size: 13px; font-weight: 700; background: var(--chip); color: var(--texto); flex: none; }
+  .selo i { width: 10px; height: 10px; border-radius: 50%; background: var(--fraco); }
+  .selo.mini { height: 26px; }
+  .selo.pronta  { background: var(--selo-ok-fundo);   color: var(--selo-ok-txt); }   .selo.pronta i  { background: var(--selo-ok-ponto); }
+  .selo.dosando { background: var(--selo-dos-fundo);  color: var(--selo-dos-txt); }  .selo.dosando i { background: var(--selo-dos-ponto); }
+  .selo.erro    { background: var(--selo-erro-fundo); color: var(--selo-erro-txt); } .selo.erro i    { background: var(--selo-erro-ponto); }
+
+  /* ---- menu principal: botões ocupam a altura; selo + IP no rodapé ---- */
+  .corpo.menu { gap: 12px; }
+  .corpo.menu .grade-botoes { flex: 1; grid-template-rows: 1fr 1fr; margin-top: 0; }
+  .corpo.menu .botao-grande { height: auto; font-size: 22px; font-weight: 600; }
+  .rodape-estado { display: flex; align-items: center; justify-content: center; gap: 12px; height: 28px; flex: none;
+                   color: var(--fraco); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  /* ---- Status: 4 blocos + painel da fila (geometria = TS35 no firmware) ---- */
+  .corpo.v2 { padding: 10px 16px 0; gap: 8px; }
+  .blocos { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 58px 58px; gap: 8px; flex: none; }
+  .bloco { background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px; padding: 0 12px; min-width: 0;
+           display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+  .valor { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .painel { background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px; height: 96px; flex: none;
+            padding: 4px 14px; display: grid; grid-template-rows: repeat(3, 1fr); }
+  .painel .rotulo { width: 92px; }
+
+  /* ---- Dosagem: nome do químico em destaque, barra grossa com % ---- */
+  .corpo.dose { gap: 0; }
+  .meta { height: 16px; flex: none; display: flex; align-items: center; font-size: 13px; min-width: 0; }
+  .meta .rotulo, .prog-rot .rotulo, .seguir .rotulo { margin-right: 10px; }
+  .item-atual { position: relative; margin-top: 6px; height: 88px; flex: none; background: var(--cartao); border: 1px solid var(--borda);
+                border-radius: 12px; padding: 0 14px 0 26px; display: flex; flex-direction: column; justify-content: center; gap: 9px; min-width: 0; }
+  .item-atual::before { content: ""; position: absolute; left: 10px; top: 12px; bottom: 12px; width: 5px; border-radius: 3px; background: var(--destaque); }
+  .item-atual .nome { font-size: 24px; font-weight: 700; letter-spacing: -.2px; }
+  .item-atual .dets { display: flex; align-items: center; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 0; }
+  .prog-rot { margin-top: 9px; height: 26px; flex: none; display: flex; align-items: center; font-size: 13.5px; }
+  .prog-rot .pct { margin-left: auto; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .seguir { margin-top: 14px; height: 16px; flex: none; }
 
   /* vínculo */
   .vinculo { display: flex; gap: 14px; align-items: center; margin-top: 2px; }
@@ -126,7 +186,7 @@
     padding: 8px 12px; cursor: pointer; font-size: 12px;
   }
   .campo.ativo { border-color: var(--destaque); }
-  .campo .rot { font-size: 10px; color: var(--fraco); }
+  .campo .rot { font-size: 10px; color: var(--fraco); margin-right: 8px; }
   .campo .val { font-weight: 600; font-size: 13px; }
   .acao {
     border-radius: 10px; height: 44px; display: flex; align-items: center; justify-content: center;
@@ -174,7 +234,7 @@
 
 <div class="moldura">
   <div class="tela" id="tela">
-    <div class="barra-topo"><span id="titulo">Máquina de Perfumes</span><span class="dir" id="tituloDir"></span></div>
+    <div class="barra-topo"><span class="esq" id="tituloEsq"></span><span id="titulo">Máquina de Perfumes</span><span class="dir" id="tituloDir"></span></div>
     <div class="corpo" id="corpo"></div>
   </div>
 </div>
@@ -182,12 +242,18 @@
 <div class="controles">
   <button onclick="simularDose()">▶ Simular dosagem</button>
   <button onclick="gerarAviso()">⚠ Simular aviso</button>
+  <button onclick="simularErro()">✖ Simular fila parada com erro</button>
   <button onclick="trocarTema()">◐ Tema claro/escuro</button>
 </div>
 <p class="nota">
   <b>Vínculo:</b> o QR carrega <kbd>perfume://vincular?d=&lt;aparelho&gt;&amp;c=&lt;código&gt;</kbd> —
   o app escaneia e a nuvem registra a posse (F0 do docs/11 §1.4).<br>
-  <b>Dosagem:</b> a tela entra sozinha quando a fila começa e volta ao menu ao terminar.
+  <b>Dosagem:</b> a tela entra sozinha quando a fila começa e volta ao menu ao terminar. A barra mede a
+  <b>fila</b> (itens concluídos ÷ total): o firmware não publica quanto do item atual já caiu.<br>
+  <b>Fila simulada:</b> materiais reais da paleta MVP64; canais, alvos e pesos são de demonstração. O nome
+  sai cortado em 31 bytes, como o firmware guarda.<br>
+  <b>No aparelho:</b> as fontes de fábrica do TFT_eSPI não têm acento — o firmware troca á→a, ç→c
+  (“Balança” aparece “Balanca”).
 </p>
 
 <script>
@@ -199,14 +265,33 @@ const S = {
   wifi: { ssid: "MINHA_REDE", senha: "••••••••" },
   editandoSenha: false,
   campo: { ssid: "", senha: "" },
-  estado: "idle",               // idle|dosando|erro
+  estado: "idle",               // Servidor::estado(): idle|dosando|erro
+  executando: false,            // Servidor::executando()
   ip: "192.168.0.42",
-  peso: 0.0,
-  formula: { nome: "Ambre 51", atual: 0, total: 6, canal: 3, alvo: 0.842 },
+  peso: 0.0,                    // balança: acumula, o frasco recebe a fórmula inteira
+  formula: { nome: "Ambre 51", atual: 0, total: 0 }, // atual = item_atual() = itens já concluídos
+  fila: [],                     // [{nome, canal, alvo}] como o firmware guardou
+  ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado}
   doseAnim: null,
   avisos: [],                   // {texto, quando, tipo}
   boot: Date.now() - 3723e3,
 };
+// Fila SIMULADA: materiais reais da paleta MVP64 (dados/seed/paleta_mvp64.json);
+// canais e alvos são só para a demonstração.
+const FILA_SIM = [
+  { nome: "Iso E Super", canal: 3, alvo: 0.842 },
+  { nome: "Hedione", canal: 10, alvo: 0.390 },
+  { nome: "Aldeído Hexil Cinâmico (JASMONAL)", canal: 17, alvo: 0.125 },
+  { nome: "Ambroxan", canal: 4, alvo: 0.060 },
+  { nome: "Álcool Feniletílico", canal: 11, alvo: 0.275 },
+  { nome: "Galaxolide", canal: 18, alvo: 0.510 },
+];
+// O firmware guarda o nome em char[32] (servidor.cpp: strncpy de 31 bytes):
+// a tela mostra o que sobra desse corte, não o nome inteiro do app.
+function nomeNoFirmware(nome) {
+  const bytes = new TextEncoder().encode(nome).slice(0, 31);
+  return new TextDecoder().decode(bytes).replace(/�/g, "");
+}
 const APELIDO = "A1B2C3D4E5F6";
 const CODIGO = (() => { // mesmo FNV-1a do firmware (src/vinculo.h)
   let h = 2166136261 >>> 0;
@@ -245,9 +330,24 @@ function uptime() {
 }
 
 // ----------------------------------------------------------------- telas ----
+const g3 = (x) => `${x.toFixed(3)} g`;
+// Mesmo mapa do firmware (estado_atual): idle→pronta, dosando→dosando, erro→erro
+function seloEstado(mini) {
+  const [classe, texto] = S.executando || S.estado === "dosando" ? ["dosando", "dosando"]
+    : S.estado === "erro" ? ["erro", "erro"] : ["pronta", "pronta"];
+  return `<span class="selo ${classe}${mini ? " mini" : ""}"><i></i>${texto}</span>`;
+}
+// "nome · X g · canal N" — nome em destaque, detalhes em cinza
+function linhaItem(it) {
+  return `<span class="corta forte">${it.nome || `canal ${it.canal}`}</span>` +
+         `<span class="det">${g3(it.alvo)}</span><span class="det">canal ${it.canal}</span>`;
+}
+const naFila = () => S.executando && S.formula.atual < S.formula.total;
+
 function telaPrincipal() {
   $("titulo").textContent = "Máquina de Perfumes";
   $("tituloDir").textContent = "";
+  $("corpo").className = "corpo menu";
   $("corpo").innerHTML = `
     <div class="grade-botoes">
       <div class="botao-grande" onclick="ir('status')">Status</div>
@@ -255,38 +355,63 @@ function telaPrincipal() {
       <div class="botao-grande" onclick="ir('avisos')">Avisos</div>
       <div class="botao-grande" onclick="ir('config')">Config</div>
     </div>
-    <div class="rodape" id="rodapePrincipal">estado: ${S.estado} · ${S.ip}</div>`;
+    <div class="rodape-estado">${seloEstado(false)}<span>${S.ip}</span></div>`;
+}
+function painelFila() {
+  const f = S.formula;
+  if (naFila()) {
+    const prox = S.fila[f.atual + 1];
+    return `
+      <div class="linha"><span class="rotulo">Fórmula</span><span class="corta forte">${f.nome}</span><span class="dir">item ${f.atual + 1} de ${f.total}</span></div>
+      <div class="linha"><span class="rotulo">Agora</span>${linhaItem(S.fila[f.atual])}</div>
+      <div class="linha"><span class="rotulo">A seguir</span>${prox ? linhaItem(prox) : `<span class="fraco">nada: este é o último item</span>`}</div>`;
+  }
+  const u = S.ultima;
+  return `
+    <div class="linha"><span class="rotulo">Fila</span>${S.estado === "erro"
+      ? `<span class="erro-txt">a fórmula parou com erro</span>` : `<span class="forte">nenhuma fórmula na fila</span>`}</div>
+    <div class="linha"><span class="rotulo">Última dose</span>${u
+      ? `<span class="forte">canal ${u.canal}</span><span class="det ${u.estado === "OK" ? "ok-txt" : "erro-txt"}">${u.estado}</span>` +
+        `<span class="det forte">${u.obtido.toFixed(3)} de ${g3(u.alvo)}</span>`
+      : `<span class="fraco">nenhuma desde que ligou</span>`}</div>
+    <div class="linha"><span class="rotulo"></span><span class="fraco">envie uma fórmula pelo app</span></div>`;
 }
 function telaStatus() {
   $("titulo").textContent = "Status";
   $("tituloDir").textContent = "online";
+  $("corpo").className = "corpo v2";
   $("corpo").innerHTML = `
-    <div class="cartao"><span class="rot">WiFi (SSID)</span><span class="val">${S.wifi.ssid}</span></div>
-    <div class="cartao"><span class="rot">Endereço IP</span><span class="val">${S.ip}</span></div>
-    <div class="cartao"><span class="rot">Estado</span><span class="val">${S.estado}</span></div>
-    <div class="config-linha">
-      <div class="cartao"><span class="rot">Peso na balança</span><span class="val mono">${S.peso.toFixed(3)} g</span></div>
-      <div class="cartao"><span class="rot">Uptime</span><span class="val mono">${uptime()}</span></div>
+    <div class="blocos">
+      <div class="bloco"><span class="rotulo">WiFi</span><span class="valor">${S.wifi.ssid}</span></div>
+      <div class="bloco"><span class="rotulo">Endereço IP</span><span class="valor">${S.ip}</span></div>
+      <div class="bloco"><span class="rotulo">Estado</span>${seloEstado(true)}</div>
+      <div class="bloco"><span class="rotulo">Balança</span><span class="valor">${g3(S.peso)}</span></div>
     </div>
-    <div class="rodape">tocar para voltar</div>`;
+    <div class="painel">${painelFila()}</div>
+    <div class="rodape-linha">ligada há ${uptime()}<span class="det">tocar para voltar</span></div>`;
 }
 function telaDose() {
-  const f = S.formula;
-  $("titulo").textContent = "Dosagem em curso";
-  $("tituloDir").textContent = f.nome;
-  const frac = f.total ? f.atual / f.total : 0;
+  const f = S.formula, dentro = naFila();
+  const it = dentro ? S.fila[f.atual] : null, prox = dentro ? S.fila[f.atual + 1] : null;
+  const parouComErro = !S.executando && S.estado === "erro";
+  const feitos = Math.min(f.atual, f.total), frac = f.total ? feitos / f.total : 0;
+  const mostraBarra = f.total > 0 && (dentro || (!S.executando && !parouComErro));
+  $("titulo").textContent = S.executando ? "Dosagem em curso" : "Dosagem";
+  $("tituloDir").textContent = "";
+  $("corpo").className = "corpo v2 dose";
   $("corpo").innerHTML = `
-    <div class="config-linha">
-      <div class="cartao"><span class="rot">Item</span><span class="val">${Math.min(f.atual + 1, f.total)} / ${f.total}</span></div>
-      <div class="cartao"><span class="rot">Canal</span><span class="val">${f.canal}</span></div>
+    <div class="meta">${dentro ? `<span class="rotulo">Fórmula</span><span class="corta forte">${f.nome}</span><span class="dir">item ${f.atual + 1} de ${f.total}</span>` : ""}</div>
+    <div class="item-atual">${dentro
+      ? `<div class="nome corta">${it.nome || `canal ${it.canal}`}</div>
+         <div class="dets"><span class="forte">canal ${it.canal}</span><span class="det forte">alvo ${g3(it.alvo)}</span><span class="det">balança ${g3(S.peso)}</span></div>`
+      : `<div class="nome corta${parouComErro ? " erro-txt" : ""}">${parouComErro ? "Fila parada com erro" : "Fila encerrada"}</div>
+         <div class="dets"><span class="fraco">balança ${g3(S.peso)}</span></div>`}
     </div>
-    <div class="config-linha">
-      <div class="cartao"><span class="rot">Alvo</span><span class="val mono">${f.alvo.toFixed(3)} g</span></div>
-      <div class="cartao"><span class="rot">Obtido (balança)</span><span class="val mono" id="obtido">${S.peso.toFixed(3)} g</span></div>
-    </div>
-    <div class="barra-prog" style="margin-top:4px"><div id="progDose" style="width:${(frac * 100).toFixed(1)}%"></div></div>
-    <div class="rodape ${S.estado === "erro" ? "erro" : S.estado === "dosando" ? "" : "ok"}" id="rodapeDose">${
-      S.estado === "erro" ? "erro — ver Avisos" : S.estado === "dosando" ? `dosando… ${f.nome}` : "concluída — tocar para voltar"}</div>`;
+    ${mostraBarra ? `
+    <div class="prog-rot"><span class="rotulo">Fila</span><span class="forte">${feitos} de ${f.total} concluídos</span><span class="pct">${Math.round(frac * 100)}%</span></div>
+    <div class="barra-prog"><div style="width:${(frac * 100).toFixed(1)}%${feitos ? ";min-width:32px" : ""}"></div></div>` : ""}
+    ${dentro ? `<div class="linha seguir"><span class="rotulo">A seguir</span>${prox ? linhaItem(prox) : `<span class="fraco">nada: este é o último item</span>`}</div>` : ""}
+    <div class="rodape-linha">${S.executando ? "tocar para voltar ao menu" : "tocar para voltar"}</div>`;
 }
 function telaVinculo() {
   $("titulo").textContent = "Vínculo com a conta";
@@ -319,6 +444,7 @@ function telaAvisos() {
 function telaConfig() {
   $("titulo").textContent = "Configuração";
   $("tituloDir").textContent = "";
+  $("tituloEsq").textContent = "‹ voltar"; // tocar na barra volta ao menu (igual ao firmware)
   const ssid = S.campo.ssid || S.wifi.ssid;
   const temSenha = S.campo.senha || S.wifi.senha;
   $("corpo").innerHTML = `
@@ -353,7 +479,14 @@ function telaTeclado() {
 const TELAS = { principal: telaPrincipal, status: telaStatus, dose: telaDose,
                 vinculo: telaVinculo, avisos: telaAvisos, config: telaConfig,
                 teclado: telaTeclado };
-function ir(menu) { S.menu = menu; TELAS[menu](); }
+function ir(menu) {
+  S.menu = menu;
+  $("corpo").className = "corpo";
+  $("tituloEsq").textContent = "";
+  TELAS[menu]();
+}
+// telas com dado vivo (o firmware redesenha 1×/s; o menu, quando muda o selo)
+function redesenharVivo() { if (["dose", "status", "principal"].includes(S.menu)) TELAS[S.menu](); }
 function refletirTema() { document.body.dataset.tema = S.tema; }
 function trocarTema() { S.tema = S.tema === "escuro" ? "claro" : "escuro"; refletirTema(); if (S.menu === "config") telaConfig(); }
 function abrirTeclado(senha) { S.editandoSenha = senha; ir("teclado"); }
@@ -378,31 +511,34 @@ function salvarWifi() {
 // ------------------------------------------------------------ simulações ----
 async function simularDose() {
   if (S.doseAnim) return;
+  S.doseAnim = true;
+  S.fila = FILA_SIM.map(x => ({ ...x, nome: nomeNoFirmware(x.nome) }));
+  S.formula = { nome: "Ambre 51", atual: 0, total: S.fila.length };
+  S.executando = true;
   S.estado = "dosando";
-  S.peso = 0;
-  S.formula.atual = 0;
-  if (S.menu === "principal") ir("dose"); else telaDose();
-  for (let item = 0; item < S.formula.total; item++) {
-    S.formula.atual = item;
-    S.formula.canal = (item * 7 + 3) % 20;
-    S.formula.alvo = 0.2 + ((item * 37) % 90) / 100;
-    for (let p = 0; p <= 20; p++) {
-      S.peso = S.formula.alvo * p / 20;
-      if (S.menu === "dose") {
-        telaDose();
-        const o = document.getElementById("obtido");
-        if (o) o.textContent = `${S.peso.toFixed(3)} g`;
-        const b = document.getElementById("progDose");
-        if (b) b.style.width = `${((item + p / 20) / S.formula.total * 100).toFixed(1)}%`;
-        await atraso(70);
-      } else await atraso(70);
+  S.peso = 0; // frasco vazio tarado antes de começar
+  if (S.menu === "principal") ir("dose"); else redesenharVivo();
+  for (let i = 0; i < S.fila.length; i++) {
+    S.formula.atual = i;
+    const it = S.fila[i], antes = S.peso;
+    for (let p = 1; p <= 20; p++) {
+      S.peso = antes + it.alvo * p / 20; // gotas caindo no MESMO frasco
+      redesenharVivo();
+      await atraso(70);
     }
-    S.peso = 0; // troca de frasco (tara)
+    S.ultima = { canal: it.canal, alvo: it.alvo, obtido: S.peso - antes, estado: "OK" };
   }
-  S.estado = "idle";
   S.formula.atual = S.formula.total;
+  S.executando = false;
+  S.estado = "idle";
   S.doseAnim = null;
-  if (S.menu === "dose") { telaDose(); await atraso(1200); ir("principal"); }
+  redesenharVivo();
+  if (S.menu === "dose") { await atraso(1200); if (S.menu === "dose") ir("principal"); }
+}
+function simularErro() { // como o Servidor faz quando a mesa falha no meio da fila
+  if (S.doseAnim) return;
+  S.estado = "erro";
+  redesenharVivo();
 }
 function gerarAviso() {
   const exemplos = [
@@ -424,6 +560,13 @@ addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape" && !["principal", "dose"].includes(S.menu)) ir("principal");
 });
+// toque como no firmware: Status, Vínculo, Avisos e Dosagem voltam ao menu com
+// qualquer toque; na Config, a barra de título ("‹ voltar") volta.
+$("corpo").addEventListener("click", (e) => {
+  if (e.target.closest("[onclick]")) return;
+  if (["status", "vinculo", "avisos", "dose"].includes(S.menu)) ir("principal");
+});
+document.querySelector(".barra-topo").addEventListener("click", () => { if (S.menu === "config") ir("principal"); });
 
 // boot
 ir("principal");

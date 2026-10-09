@@ -11,15 +11,15 @@
 <link rel="apple-touch-icon" href="icone-192.png">
 <title>Máquina de Perfumes</title>
 <style>
-:root{--bg:#faf8f5;--card:#fff;--tx:#2a2420;--mut:#7a6f66;--ac:#8a5a44;--ac2:#f1e6dd;--bd:#e4dad0;--ok:#3d7a4f;--er:#a33}
-@media (prefers-color-scheme:dark){:root{--bg:#1b1714;--card:#262019;--tx:#efe6dd;--mut:#a89c90;--ac:#d19a7c;--ac2:#35291f;--bd:#3a3026;--ok:#6fbf86;--er:#e08080}}
+:root{--bg:#faf8f5;--card:#fff;--tx:#2a2420;--mut:#7a6f66;--ac:#8a5a44;--ac-tx:#fff;--ac2:#f1e6dd;--bd:#e4dad0;--ok:#3d7a4f;--er:#a33}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1714;--card:#262019;--tx:#efe6dd;--mut:#a89c90;--ac:#d19a7c;--ac-tx:#1b1714;--ac2:#35291f;--bd:#3a3026;--ok:#6fbf86;--er:#e08080}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
 main{max-width:640px;margin:0 auto;padding:16px;padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right));padding-bottom:max(24px,env(safe-area-inset-bottom))}
 h1{font-size:20px;margin:8px 0 2px}h2{font-size:18px;margin:12px 0 8px}
 .sub{color:var(--mut);font-size:14px;margin:0 0 12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin:12px 0}
 label.op{display:flex;gap:10px;align-items:center;padding:12px;border:1px solid var(--bd);border-radius:10px;margin:8px 0;cursor:pointer;min-height:48px}
 label.op:has(input:checked){background:var(--ac2);border-color:var(--ac)}input[type=radio],input[type=checkbox]{width:20px;height:20px;accent-color:var(--ac)}
-button{font:inherit;border:0;border-radius:10px;padding:12px 18px;background:var(--ac);color:#fff;cursor:pointer;min-height:44px}
+button{font:inherit;border:0;border-radius:10px;padding:12px 18px;background:var(--ac);color:var(--ac-tx);cursor:pointer;min-height:44px}
 button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}button:disabled{opacity:.45;cursor:default}
 select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dica{color:var(--mut);font-size:13px;margin:6px 0}
@@ -29,7 +29,7 @@ select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(
 .barra{height:10px;border-radius:5px;background:var(--ac2);margin:3px 0 8px;overflow:hidden}.barra i{display:block;height:100%;background:var(--ac)}
 .fam{display:flex;justify-content:space-between;font-size:14px}table{width:100%;border-collapse:collapse;font-size:14px}td{padding:4px 0;border-bottom:1px solid var(--bd)}td:last-child{text-align:right;white-space:nowrap}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--ac2);color:var(--ac)}.ruim{color:var(--er)}
-.notas button{padding:10px 14px;min-width:44px}.notas button.sel{background:var(--ac);color:#fff}pre{white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--ac2);padding:10px;border-radius:8px}
+.notas button{padding:10px 14px;min-width:44px}.notas button.sel{background:var(--ac);color:var(--ac-tx)}pre{white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--ac2);padding:10px;border-radius:8px}
 .erro{color:var(--er);margin:8px 0}textarea{width:100%;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)}
 .banner{background:var(--ac2);border:1px solid var(--ac);border-radius:10px;padding:10px 12px;margin:8px 0;font-size:14px}
 .estrelas{color:var(--ac);letter-spacing:2px}.falta{color:var(--er);font-size:14px;margin:6px 0}
