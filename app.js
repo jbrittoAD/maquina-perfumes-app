@@ -67,7 +67,7 @@
 
   function marcarAba(qual) {
     abaAtual = qual;
-    for (const [nome, id] of [['novo', '#aba-novo'], ['receitas', '#aba-receitas'], ['mapa', '#aba-mapa']]) $(id).className = qual === nome ? '' : 'sec';
+    for (const [nome, id] of [['novo', '#aba-novo'], ['receitas', '#aba-receitas'], ['mapa', '#aba-mapa'], ['imprimir', '#aba-imprimir']]) $(id).className = qual === nome ? '' : 'sec';
   }
 
   async function popularMaquinas(preferida) {
@@ -232,9 +232,9 @@
 
   /* Imprimir: a receita COMO ESTÁ AGORA (com as quantidades que a pessoa mexeu no ajuste fino). A conta é refeita pelo motor com `novos` vazio,
    * para a folha trazer a dosagem por vidro mesmo com o modo técnico desligado; o que se imprime é o que o motor valida neste instante. */
-  async function imprimir(c, respostasDaReceita) {
+  async function imprimir(c, respostasDaReceita, frascoRotulo) {
     const j = await api('/api/ajustar', { maquina, respostas: respostasDaReceita, itens: c.formula, novos: {}, massa_final_g: c.massa_final_g, nome: c.titulo, tecnico: true });
-    const x = j.candidato, frasco = ML_DO_FRASCO.has(x.massa_final_g) ? ML_DO_FRASCO.get(x.massa_final_g) + ' ml (' + fmt(x.massa_final_g) + ' g)' : fmt(x.massa_final_g) + ' g';
+    const x = j.candidato, frasco = frascoRotulo || (ML_DO_FRASCO.has(x.massa_final_g) ? ML_DO_FRASCO.get(x.massa_final_g) + ' ml (' + fmt(x.massa_final_g) + ' g)' : fmt(x.massa_final_g) + ' g');
     const soAromas = x.ingredientes.reduce((s, i) => s + i.gramas, 0);
     $('#folha').replaceChildren(
       el('h1', {}, x.titulo),
@@ -463,13 +463,16 @@
     } catch (e) { if (minha === vez) erro(e); }
   }
 
-  async function exportar() {
-    const j = await api('/api/exportar', {});
-    const link = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(j, null, 1)], { type: 'application/json' })), download: 'receitas-perfume.json' });
+  function baixar(nome, texto) {
+    const link = el('a', { href: URL.createObjectURL(new Blob([texto], { type: 'application/json' })), download: nome });
     document.body.append(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
+  async function exportar() {
+    baixar('receitas-perfume.json', JSON.stringify(await api('/api/exportar', {}), null, 1));
   }
 
   async function importar(arquivo) {
@@ -688,6 +691,160 @@
         el('div', { class: 'linha' }, salvarBt, ja ? apagarBt : '')));
   }
 
+  // ---------------------------------------------------------------------------------------------- imprimir (docs/11 §1 — SITE-1, fluxo F1 local)
+  /* A primeira leva do site de compartilhamento, dentro do app: escolher uma fórmula que já existe (minhas receitas,
+   * acordes do banco, biblioteca), o volume do frasco e mandar imprimir — com o LOTE MÍNIMO (decisão 14) e a
+   * PRÉ-CHECAGEM de estoque (decisão 8) ANTES de habilitar o botão, e o arquivo .json da fórmula no fim (decisão 9).
+   * As contas novas estão no módulo Imprimir; aqui só se desenha e se pede ao motor. Este conteúdo acompanha a
+   * máquina: é grátis (decisão 10). Tudo local — a biblioteca baixa uma vez, como sempre. */
+  let imp = null, impFonte = 'acordes';        // a escolha da aba ({ fonte, id, ml }) e qual lista está aberta na escolha
+  const semAcento = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  function telaImprimir() {
+    if (imp) return telaImprimirFormula();
+    telaImprimirFontes();
+  }
+
+  async function telaImprimirFontes() {
+    const minha = ++vez;
+    imp = null;
+    marcarAba('imprimir');
+    $('#hist').replaceChildren();
+    const t = $('#tela'), lista = el('div', { class: 'achados', style: 'margin-top:8px' });
+    const buscar = el('input', { type: 'search', placeholder: 'Buscar por nome…', 'aria-label': 'Buscar na lista de fórmulas', oninput: () => desenhar() });
+    const chips = [['receitas', 'Minhas receitas'], ['acordes', 'Acordes do banco'], ['biblioteca', 'Biblioteca']]
+      .map(([f, rotulo], i) => el('button', { class: impFonte === f ? '' : 'sec', onclick: () => { impFonte = f; chips.forEach((b, k) => b.className = k === i ? '' : 'sec'); desenhar(); } }, rotulo));
+    async function desenhar() {
+      const q = semAcento(buscar.value || '');
+      lista.replaceChildren(el('p', { class: 'dica' }, 'Carregando…'));
+      let itens = [];
+      try {
+        if (impFonte === 'receitas') {
+          itens = (await api('/api/receitas', {})).receitas
+            .filter(r => !q || semAcento(r.nome).includes(q))
+            .map(r => ({ id: r.id, nome: r.nome, sub: data(r.criada_em) + ' · ' + estrelas(r.nota) }));
+        } else if (impFonte === 'acordes') {
+          itens = db.acordes_motor.filter(a => !q || semAcento(a.nome).includes(q))
+            .map(a => ({ id: a.id, nome: a.nome, sub: a.itens.filter(i => i.partes).length + ' ingredientes' }));
+        } else {
+          await carregarBiblioteca();
+          itens = (q.length < 2 ? [] : db.biblioteca.acordes.map((a, i) => ({ i, nome: a[1], tier: a[2] }))
+            .filter(a => semAcento(a.nome).includes(q)).slice(0, 30))
+            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · tier ' + a.tier }));
+        }
+      } catch (e) {
+        if (minha !== vez) return;
+        lista.replaceChildren(el('p', { class: 'falta' }, 'Não consegui carregar esta lista: ' + e.message
+          + (impFonte === 'biblioteca' ? '. Conecte-se à internet uma vez para baixar a biblioteca.' : '.')));
+        return;
+      }
+      if (minha !== vez) return;
+      if (!itens.length) {
+        lista.replaceChildren(el('p', { class: 'dica' },
+          impFonte === 'receitas' ? 'Você ainda não salvou nenhuma receita. Monte um perfume em "Novo perfume" e salve com uma nota.'
+          : impFonte === 'biblioteca' && q.length < 2 ? 'Digite ao menos 2 letras para buscar nos '
+            + (db.biblioteca ? db.biblioteca.acordes.length.toLocaleString('pt-BR') : '9.180') + ' acordes da biblioteca.'
+          : 'Nada encontrado com essa busca.'));
+        return;
+      }
+      lista.replaceChildren(...itens.map(r => el('button', { onclick: () => { imp = { fonte: impFonte, id: r.id, ml: null }; telaImprimirFormula(); } },
+        r.nome, ' ', el('small', {}, r.sub))));
+    }
+    t.replaceChildren(el('div', { class: 'card' }, el('h2', {}, 'Imprimir'),
+      el('p', { class: 'dica' }, 'Escolha um perfume ou acorde, o volume do frasco e mande a máquina dosar. O app confere os vidros antes de imprimir.'),
+      el('p', {}, el('span', { class: 'badge' }, Imprimir.GRATIS))),
+      el('div', { class: 'card' }, el('h2', {}, 'O que imprimir'),
+        el('div', { class: 'linha' }, ...chips), buscar, lista));
+    desenhar();
+  }
+
+  async function formulaImp() {
+    if (imp.fonte === 'receitas') {
+      const j = await api('/api/receita', { id: imp.id, maquina, tecnico: false }), r = j.receita;
+      const f = Imprimir.daReceita(Object.fromEntries(r.itens.map(i => [i.id, i.gramas])), r.massa_final_g, r.nome, r.nota, r.respostas);
+      f.faltando = j.candidato.faltando.map(x => x.nome);      // o que a máquina ativa não tem, como no "Abrir" da receita
+      return f;
+    }
+    if (imp.fonte === 'acordes') return Imprimir.comoProduto(Imprimir.doAcorde(db, imp.id, maquina));
+    await carregarBiblioteca();
+    return Imprimir.comoProduto(Imprimir.daBiblioteca(db, maquina, imp.id));
+  }
+
+  async function telaImprimirFormula() {
+    const minha = ++vez;
+    marcarAba('imprimir');
+    $('#hist').replaceChildren();
+    const t = $('#tela');
+    t.replaceChildren(el('div', { class: 'card' }, 'Preparando a fórmula…'));
+    let f;
+    try { f = await formulaImp(); } catch (e) {
+      if (minha !== vez) return;
+      t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Escolher outra fórmula')),
+        el('div', { class: 'card erro' }, e.message));
+      return;
+    }
+    if (minha !== vez) return;
+    if (f.impossivel) {
+      t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Escolher outra fórmula')),
+        el('div', { class: 'card' }, el('h2', {}, f.titulo), el('p', { class: 'falta' }, f.aviso)));
+      return;
+    }
+    const sel = Imprimir.seletor(db, maquina, f.itens);
+    const ml = sel.padrao && (!imp.ml || !sel.opcoes.some(o => o.ml === imp.ml && !o.desabilitada)) ? sel.padrao.ml : imp.ml;
+    imp.ml = ml;
+    const g = ml === null ? 0 : ml * Imprimir.DENSIDADE_DECLARADA;
+    const pch = ml === null ? null : Imprimir.prechecagem(db, app, maquina, f, g, f.titulo);
+    const msgs = el('span', { class: 'dica', role: 'status' });
+    const btFolha = el('button', { disabled: !pch || !pch.ok, title: pch && pch.bloqueios.length ? pch.bloqueios[0] : '',
+      onclick: async () => {
+        msgs.textContent = '';
+        try {
+          await imprimir({ titulo: f.titulo, massa_final_g: g, formula: Object.fromEntries(f.itens.map(i => [String(i.material_id), i.fracao * g])) },
+            () => f.respostas || {}, ml + ' ml (' + fmt(g) + ' g)');
+        } catch (e) { msgs.textContent = 'Não consegui preparar a impressão: ' + e.message; }
+      } }, 'Imprimir folha');
+    const btExportar = el('button', { class: 'sec', onclick: () => {
+      baixar('formula-' + semAcento(f.titulo).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '.json',
+        JSON.stringify(Imprimir.arquivoDaFormula(db, f, g, new Date().toISOString()), null, 1));
+      msgs.textContent = 'Fórmula exportada — quem imprime recebe a fórmula.';
+    } }, 'Exportar fórmula (.json)');
+    const rotFonte = { receitas: 'minha receita', acordes: 'acorde do banco', biblioteca: 'acorde da biblioteca' }[f.fonte];
+    const porLote = sel.opcoes.find(o => o.desabilitada === 'lote'), porMaquina = sel.opcoes.find(o => o.desabilitada === 'maquina');
+    t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Escolher outra fórmula')),
+      el('div', { class: 'card' },
+        el('div', { class: 'linha' }, el('h2', { style: 'margin:0;flex:1' }, f.titulo), el('span', { class: 'badge' }, rotFonte), el('span', { class: 'badge' }, 'grátis')),
+        el('table', {}, el('tbody', {}, ...f.itens.map(i => el('tr', {},
+          el('td', {}, Motor.nome_curto(db.materiais.get(i.material_id).nome, 46)), el('td', {}, fmt(i.fracao * 100) + '%'))))),
+        ...(f.concentracao_pct ? [el('p', { class: 'dica' }, 'Acorde dosado a ' + fmt(f.concentracao_pct)
+          + '% — a concentração padrão do motor; o etanol completa o frasco.')] : []),
+        ...(f.cobertura !== 1 ? [el('p', { class: 'dica' }, 'Cobertura: ' + fmt(f.cobertura * 100) + '% das partes do acorde nesta máquina.')] : []),
+        ...f.trocas.map(tr => el('p', { class: 'dica' }, 'Troca: ' + tr + '.')),
+        ...f.escolhas.map(e => el('p', { class: 'dica' }, 'Escolha feita: ' + e.item + ' → ' + e.opcoes[0] + (e.opcoes.length > 1 ? ' (outras opções: ' + e.opcoes.slice(1).join(', ') + ')' : '') + '.')),
+        ...(f.faltando.length ? [el('p', { class: 'falta' }, 'Fora desta máquina: ' + f.faltando.join(', ') + ' — com troca/ajuste o lote muda.')] : [])),
+      el('div', { class: 'card' }, el('h2', {}, 'Volume do frasco'),
+        ...(sel.lote.limitante ? [el('p', { class: 'dica' }, 'Lote mínimo desta fórmula nesta máquina: ' + fmt(sel.lote.ml) + ' ml.')] : []),
+        ...(maquina === Motor.ID_PROPRIA ? [] : [el('p', { class: 'dica' }, '⚠ ' + Imprimir.avisoReferencia(db, maquina))]),
+        el('div', { class: 'linha notas', style: 'margin-top:6px' },
+          ...sel.opcoes.map(o => el('button', { class: o.ml === ml ? 'sel' : 'sec', disabled: !!o.desabilitada, title: o.motivo || '',
+            onclick: () => { imp.ml = o.ml; telaImprimirFormula(); } }, o.ml + ' ml'))),
+        ...(porLote ? [el('p', { class: 'dica' }, porLote.motivo + '.')] : []),
+        ...(porMaquina ? [el('p', { class: 'dica' }, porMaquina.motivo + '.')] : [])),
+      el('div', { class: 'card' }, el('h2', {}, 'Conferência antes de imprimir'),
+        ml === null ? el('p', { class: 'falta' }, 'Nenhum volume da grade dosa nesta máquina.')
+        : [el('p', { class: 'dica' }, 'O que esta impressão usa de cada vidro da ' + db.maquinas.get(maquina).nome + ' para '
+            + ml + ' ml (' + fmt(g) + ' g — densidade declarada ' + fmt(Imprimir.DENSIDADE_DECLARADA) + ' g/ml):'),
+          el('table', {}, el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Vidro'), el('th', { scope: 'col' }, 'Material'),
+            el('th', { scope: 'col' }, 'No vidro'), el('th', { scope: 'col' }, 'Vai usar'))),
+            el('tbody', {}, ...pch.linhas.map(l => el('tr', {}, el('td', {}, String(l.canal)), el('td', {}, l.material),
+              el('td', {}, l.estoque_texto), el('td', {}, g3(l.usar_g) + ' g'))))),
+          ...(pch.ok ? [el('p', { class: 'ok' }, '✔ Os vidros cobrem esta impressão.')] : pch.bloqueios.map(b => el('p', { class: 'falta' }, '✕ ' + b))),
+          ...pch.avisos.map(a => el('p', { class: 'dica' }, '⚠ ' + a))]),
+      el('div', { class: 'card' }, el('h2', {}, 'Imprimir'),
+        el('p', { class: 'dica' }, pch && pch.ok ? 'Tudo conferido: a folha traz a fórmula e a dosagem vidro por vidro.'
+          : 'O botão liga quando a conferência acima passar.'),
+        el('div', { class: 'linha' }, btFolha, btExportar), msgs));
+  }
+
   // ---------------------------------------------------------------------------------------------- nariz digital (o especialista)
   // Onze perguntas sobre o cheiro ideal (docs/09) viram 3 acordes da biblioteca recomendados aqui no aparelho. As previsões
   // vêm prontas no especialista.json (~3 MB), buscado UMA vez quando a pessoa termina de responder — o service worker guarda.
@@ -825,6 +982,7 @@
       cru = await resposta.json();
       db = new Motor.Banco(cru);
       app = Motor.criar_app(db, guardar, undefined, propria);
+      Imprimir.usar(Motor);                      // o módulo da aba Imprimir lê o motor (nada dele é escrito)
     } catch {
       $('#tela').replaceChildren(el('div', { class: 'card erro' }, 'Não consegui carregar os dados do app. Conecte-se à internet uma vez para instalar.'));
       return;
@@ -833,18 +991,19 @@
     $('#maq').onchange = () => {
       maquina = $('#maq').value;
       lembrar.gravar(CHAVE_MAQUINA, maquina);
-      if (aberta !== null) abrir(aberta); else if (abaAtual === 'receitas') listar(); else if (abaAtual === 'mapa') telaMapa(); else { respostas = {}; passo(); }
+      if (aberta !== null) abrir(aberta); else if (abaAtual === 'receitas') listar(); else if (abaAtual === 'mapa') telaMapa(); else if (abaAtual === 'imprimir') telaImprimir(); else { respostas = {}; passo(); }
     };
     $('#tec').onchange = () => { if (aberta !== null) abrir(aberta); else if (candidatos.length) compor(usandoBiblio); };
     $('#aba-novo').onclick = () => { aberta = null; pai = null; passo(); };
     $('#aba-receitas').onclick = listar;
     $('#aba-mapa').onclick = telaMapa;
+    $('#aba-imprimir').onclick = telaImprimir;
     $('#aba-acordes').onclick = () => { location.href = 'catalogo.html'; };   // o catálogo completo é uma página própria, ao lado do app
     $('#aba-escadas').onclick = () => { location.href = 'escadas.html'; };    // a escada de gotas também (mesma navegação do catálogo)
     $('#rodape').textContent = 'Para instalar no celular: menu do navegador → Adicionar à tela inicial. Dados ' + db.versao + '.';
     servico();
-    const alvo = new URLSearchParams(location.search).get('aba');            // o catálogo/escadas voltam pelo link (index.html?aba=receitas|mapa)
-    if (alvo === 'receitas') listar(); else if (alvo === 'mapa') telaMapa(); else passo();
+    const alvo = new URLSearchParams(location.search).get('aba');            // o catálogo/escadas voltam pelo link (index.html?aba=receitas|mapa|imprimir)
+    if (alvo === 'receitas') listar(); else if (alvo === 'mapa') telaMapa(); else if (alvo === 'imprimir') telaImprimir(); else passo();
   }
 
   iniciar();
