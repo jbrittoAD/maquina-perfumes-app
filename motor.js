@@ -1205,13 +1205,17 @@
   const MAX_IMPORTADAS = 2000;
 
   function sanear(r, agora) {
-    if (!r || typeof r !== 'object' || typeof r.nome !== 'string' || !Array.isArray(r.itens) || !Number.isInteger(r.nota) || r.nota < 1 || r.nota > 5) return null;
+    if (!r || typeof r !== 'object' || typeof r.nome !== 'string' || !Array.isArray(r.itens)) return null;
+    // a NOTA pode não existir (fórmula exportada de acorde, anúncio do marketplace): "sem avaliação" é legítimo e nada se inventa.
+    // Inválida (0, 6, 3.5, 'x') continua rejeitada — só a AUSÊNCIA passa.
+    const nota = r.nota === undefined || r.nota === null ? null : r.nota;
+    if (nota !== null && (!Number.isInteger(nota) || nota < 1 || nota > 5)) return null;
     const itens = r.itens.filter(i => i && Number.isInteger(i.id) && typeof i.nome === 'string' && Number.isFinite(i.gramas) && i.gramas > 0)
       .map(i => ({ id: i.id, cas: typeof i.cas === 'string' ? i.cas : null, nome: i.nome, gramas: i.gramas }));
     if (!itens.length) return null;
     const resp = r.respostas && typeof r.respostas === 'object' && !Array.isArray(r.respostas) ? r.respostas : {};
     return { nome: r.nome.slice(0, 80), maquina: String(r.maquina || ''), massa_final_g: Number.isFinite(r.massa_final_g) && r.massa_final_g > 0 ? r.massa_final_g : 26.5,
-      nota: r.nota, comentario: typeof r.comentario === 'string' ? r.comentario.slice(0, 300) || null : null,
+      nota, comentario: typeof r.comentario === 'string' ? r.comentario.slice(0, 300) || null : null,
       criada_em: typeof r.criada_em === 'string' ? r.criada_em : agora(), pai_id: null,
       respostas: Object.values(resp).every(v => Array.isArray(v) && v.every(x => typeof x === 'string')) ? resp : {},
       protagonista_id: Number.isInteger(r.protagonista_id) ? r.protagonista_id : 0, itens };

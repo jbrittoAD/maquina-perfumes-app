@@ -50,6 +50,8 @@
     gravar(mapa) { if (mapa === null) localStorage.removeItem(CHAVE_PROPRIA); else localStorage.setItem(CHAVE_PROPRIA, JSON.stringify(mapa)); },
   };
   const calibracao = Calibracao.criar(lembrar);               // fatores mg/passo e densidades medidas por canal (docs/11 §2)
+  const mkt = Site.marketplace(lembrar);                      // os anúncios que este aparelho conhece (SITE-2: começa vazio)
+  const vinc = Site.vinculos(lembrar);                        // máquinas vinculadas pelo QR da telinha (F0, docs/11 §1.6)
 
   async function api(rota, corpo) {
     if (PESADAS.has(rota)) await new Promise(r => setTimeout(r, 30));
@@ -517,7 +519,13 @@
     function linha(c) {
       const nome = el('div', { class: 'dica' }, c.material_id ? nomeDe(c.material_id) : 'escolha o material'), achados = el('div', { class: 'achados' });
       const calib = el('div');                                    // o bloco de calibração acompanha o que muda no vidro
-      const mudaCalib = () => calib.replaceChildren(blocoCalibracao(c));
+      const acab = el('div');                                     // e o aviso de reposição (decisão 13) idem
+      const mudaAcab = () => {
+        const info = c.material_id ? Site.acabando(c) : null;
+        acab.replaceChildren(!info || !info.acabando ? '' : el('button', { class: 'chip atencao',
+          onclick: () => telaReposicao(c) }, 'acabando — ' + Site.textoAcabando(info) + ' · ver ofertas'));
+      };
+      const mudaCalib = () => { calib.replaceChildren(blocoCalibracao(c)); mudaAcab(); };
       mudaCalib();
       const busca = el('input', { type: 'search', placeholder: 'Buscar material (nome ou CAS)', 'aria-label': 'Buscar material do vidro ' + c.canal });
       busca.oninput = async () => {
@@ -537,6 +545,7 @@
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Diluição ', dil), el('label', { class: 'dica' }, 'Volume (ml) ',
           numero(c.volume_atual_ml, 'any', v => { c.volume_atual_ml = v; }, 'Volume do vidro em ml')),
         el('label', { class: 'dica' }, 'Densidade (g/ml, opcional) ', numero(c.densidade_g_ml, 'any', v => { c.densidade_g_ml = v; }, 'Densidade em g/ml', 'não sei'))),
+        acab,
         calib,
         el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: () => telaCalibracao(j, c) }, 'Calibrar este vidro')));
     }
@@ -576,7 +585,8 @@
       desenharMapa(j);
     } }, 'Adicionar vidro')),
     painel, msg,
-    el('div', { class: 'linha', style: 'margin-top:8px' }, salvarBt, j.registrada ? apagar : ''));
+    el('div', { class: 'linha', style: 'margin-top:8px' }, salvarBt, j.registrada ? apagar : ''),
+    blocoVinculo());
     conferir();
   }
 
@@ -697,7 +707,8 @@
    * PRÉ-CHECAGEM de estoque (decisão 8) ANTES de habilitar o botão, e o arquivo .json da fórmula no fim (decisão 9).
    * As contas novas estão no módulo Imprimir; aqui só se desenha e se pede ao motor. Este conteúdo acompanha a
    * máquina: é grátis (decisão 10). Tudo local — a biblioteca baixa uma vez, como sempre. */
-  let imp = null, impFonte = 'acordes';        // a escolha da aba ({ fonte, id, ml }) e qual lista está aberta na escolha
+  let imp = null, impFonte = 'acordes', impModo = 'imprimir';   // a escolha da aba ({ fonte, id, ml }), a lista aberta e se a fórmula escolhida vai IMPRIMIR ou virar ANÚNCIO
+  const brl = n => 'R$ ' + Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const semAcento = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   function telaImprimir() {
@@ -747,18 +758,215 @@
           : 'Nada encontrado com essa busca.'));
         return;
       }
-      lista.replaceChildren(...itens.map(r => el('button', { onclick: () => { imp = { fonte: impFonte, id: r.id, ml: null }; telaImprimirFormula(); } },
+      lista.replaceChildren(...itens.map(r => el('button', { onclick: () => {
+          imp = { fonte: impFonte, id: r.id, ml: null };
+          if (impModo === 'publicar') telaPublicarFormula(); else telaImprimirFormula();
+        } },
         r.nome, ' ', el('small', {}, r.sub))));
     }
     t.replaceChildren(el('div', { class: 'card' }, el('h2', {}, 'Imprimir'),
       el('p', { class: 'dica' }, 'Escolha um perfume ou acorde, o volume do frasco e mande a máquina dosar. O app confere os vidros antes de imprimir.'),
       el('p', {}, el('span', { class: 'badge' }, Imprimir.GRATIS))),
       el('div', { class: 'card' }, el('h2', {}, 'O que imprimir'),
+        el('div', { class: 'linha' }, ...chips), buscar, lista),
+      cartaoMarketplace());
+    desenhar();
+  }
+
+  /* O marketplace local (decisões 9/11/12/14): os anúncios que este aparelho conhece — publicados aqui ou importados de
+   * um arquivo .json. Começa VAZIO de propósito: nenhum anúncio fictício. Imprimir de anúncio entra no MESMO fluxo da
+   * SITE-1 (lote mínimo real contra a máquina local, pré-checagem, folha e export da fórmula); o preço da cópia escolhida
+   * aparece sem cobrança — o gateway é pendência. */
+  function cartaoMarketplace() {
+    const box = el('div', { class: 'card' }), msgs = el('span', { class: 'dica', role: 'status' });
+    const arquivo = el('input', { type: 'file', accept: 'application/json,.json', hidden: true });
+    arquivo.onchange = async () => {
+      msgs.textContent = '';
+      try {
+        const a = Site.doArquivo(JSON.parse(await arquivo.files[0].text()));
+        if (!a) throw new Error('este arquivo não é um anúncio (formato ' + Site.FORMATO_ANUNCIO + ')');
+        mkt.adicionar(a);
+        aviso('Anúncio "' + a.nome + '" importado para o marketplace.', 5000);
+      } catch (e) { msgs.textContent = e instanceof SyntaxError ? 'Esse arquivo não é um anúncio.' : e.message; }
+      arquivo.value = '';
+      desenharMarketplace();
+    };
+    function desenharMarketplace() {
+      const anuncios = mkt.listar();
+      box.replaceChildren(el('h2', {}, 'Marketplace'),
+        el('p', { class: 'dica' }, 'Perfumes de outras pessoas para imprimir na sua máquina — quem compra recebe a fórmula junto. '
+          + 'Este marketplace é local: publica aqui ou importa um anúncio (.json) que alguém compartilhou.'),
+        ...(anuncios.length ? anuncios.map(cartaoAnuncio)
+          : [el('p', { class: 'dica' }, 'Nenhum anúncio ainda — o marketplace começa vazio. Publique um perfume seu ou importe o anúncio (.json) de alguém.')]),
+        el('div', { class: 'linha' },
+          el('button', { class: 'sec', onclick: () => { impModo = 'publicar'; telaPublicarFontes(); } }, 'Publicar anúncio'),
+          el('button', { class: 'sec', onclick: () => arquivo.click() }, 'Importar anúncio'), arquivo),
+        msgs,
+        el('p', { class: 'dica' }, el('a', { href: 'tela-esp.html' }, 'ver telinha da máquina'),
+          ' — o protótipo do que a tela do ESP32 mostra (vínculo, dosagem, avisos).'));
+    }
+    desenharMarketplace();
+    return box;
+  }
+
+  function cartaoAnuncio(a) {
+    let certeza = false;
+    const bRemover = el('button', { class: 'sec', onclick: () => {
+      if (!certeza) { certeza = true; bRemover.textContent = 'Toque de novo para remover'; bRemover.classList.add('ruim'); return; }
+      mkt.remover(a.id);
+      telaImprimirFontes();
+    } }, 'Remover');
+    return el('div', { class: 'vidro' },
+      el('div', { class: 'linha' }, el('h2', { style: 'margin:0;flex:1' }, a.nome),
+        el('span', { class: 'badge' }, Site.ehGratis(a) ? 'grátis — compartilhado' : Site.textoPreco(a))),
+      el('p', { class: 'dica' }, 'por ' + (a.autor || 'autor não assinado') + ' · publicado em ' + data(a.criada_em)),
+      ...(a.descricao ? [el('p', { class: 'dica' }, a.descricao)] : []),
+      ...(a.formula.piramide || []).map(n => el('p', { class: 'dica' }, el('b', {}, n.nivel + ': '), n.nomes.join(', '))),
+      el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(a.lote_ref_ml) + ' ml'),
+        ' — na máquina de quem imprime pode mudar (as diluições dos vidros dela mudam o lote)'),
+      el('p', { class: 'dica' }, Site.TEXTO_SPLIT + '. ' + Site.TEXTO_GATEWAY + '.'),
+      el('div', { class: 'linha' },
+        el('button', { onclick: () => { imp = { fonte: 'anuncio', id: a.id, ml: null }; telaImprimirFormula(); } }, 'Imprimir'),
+        el('button', { class: 'sec', onclick: () => {
+          baixar('anuncio-' + semAcento(a.nome).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '.json',
+            JSON.stringify(Site.arquivo(a, db.versao), null, 1));
+        } }, 'Exportar anúncio (.json)'), bRemover));
+  }
+
+  /* A escolha de fórmula para PUBLICAR: a mesma lista da impressão, outro destino. */
+  function telaPublicarFontes() {
+    const minha = ++vez;
+    imp = null;
+    marcarAba('imprimir');
+    $('#hist').replaceChildren();
+    const t = $('#tela'), lista = el('div', { class: 'achados', style: 'margin-top:8px' });
+    const buscar = el('input', { type: 'search', placeholder: 'Buscar por nome…', 'aria-label': 'Buscar na lista de fórmulas', oninput: () => desenhar() });
+    const chips = [['receitas', 'Minhas receitas'], ['acordes', 'Acordes do banco'], ['biblioteca', 'Biblioteca']]
+      .map(([f, rotulo], i) => el('button', { class: impFonte === f ? '' : 'sec', onclick: () => { impFonte = f; chips.forEach((b, k) => b.className = k === i ? '' : 'sec'); desenhar(); } }, rotulo));
+    async function desenhar() {
+      const q = semAcento(buscar.value || '');
+      lista.replaceChildren(el('p', { class: 'dica' }, 'Carregando…'));
+      let itens = [];
+      try {
+        if (impFonte === 'receitas') {
+          itens = (await api('/api/receitas', {})).receitas
+            .filter(r => !q || semAcento(r.nome).includes(q))
+            .map(r => ({ id: r.id, nome: r.nome, sub: data(r.criada_em) }));
+        } else if (impFonte === 'acordes') {
+          itens = db.acordes_motor.filter(a => !q || semAcento(a.nome).includes(q))
+            .map(a => ({ id: a.id, nome: a.nome, sub: a.itens.filter(i => i.partes).length + ' ingredientes' }));
+        } else {
+          await carregarBiblioteca();
+          itens = (q.length < 2 ? [] : db.biblioteca.acordes.map((a, i) => ({ i, nome: a[1], tier: a[2] }))
+            .filter(a => semAcento(a.nome).includes(q)).slice(0, 30))
+            .map(a => ({ id: a.i, nome: a.nome, sub: 'biblioteca · tier ' + a.tier }));
+        }
+      } catch (e) {
+        if (minha !== vez) return;
+        lista.replaceChildren(el('p', { class: 'falta' }, 'Não consegui carregar esta lista: ' + e.message + '.'));
+        return;
+      }
+      if (minha !== vez) return;
+      if (!itens.length) {
+        lista.replaceChildren(el('p', { class: 'dica' }, impFonte === 'biblioteca' && q.length < 2
+          ? 'Digite ao menos 2 letras para buscar na biblioteca.' : 'Nada para publicar com essa busca.'));
+        return;
+      }
+      lista.replaceChildren(...itens.map(r => el('button', { onclick: () => { imp = { fonte: impFonte, id: r.id, ml: null }; telaPublicarFormula(); } },
+        r.nome, ' ', el('small', {}, r.sub))));
+    }
+    t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Imprimir')),
+      el('div', { class: 'card' }, el('h2', {}, 'Publicar no marketplace'),
+        el('p', { class: 'dica' }, 'Escolha a fórmula que vai virar anúncio — suas receitas, um acorde do banco ou da biblioteca.'),
         el('div', { class: 'linha' }, ...chips), buscar, lista));
     desenhar();
   }
 
+  /* O formulário das decisões 3/11/14: preço inicial + por ml (pode ser zero), split 90/10 VISÍVEL, prévia da tabela
+   * 5..100 ml e o lote mínimo de REFERÊNCIA calculado contra a máquina ativa (aviso: na de quem imprime pode mudar). */
+  async function telaPublicarFormula() {
+    const minha = ++vez;
+    marcarAba('imprimir');
+    $('#hist').replaceChildren();
+    const t = $('#tela');
+    t.replaceChildren(el('div', { class: 'card' }, 'Preparando a fórmula…'));
+    let f;
+    try { f = await formulaImp(); } catch (e) {
+      if (minha !== vez) return;
+      t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaPublicarFontes }, '← Escolher outra fórmula')),
+        el('div', { class: 'card erro' }, e.message));
+      return;
+    }
+    if (minha !== vez) return;
+    if (f.impossivel) {
+      t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaPublicarFontes }, '← Escolher outra fórmula')),
+        el('div', { class: 'card' }, el('h2', {}, f.titulo), el('p', { class: 'falta' }, f.aviso)));
+      return;
+    }
+    const lote = Imprimir.loteMinimo(db, maquina, f.itens);
+    const massaRef = f.fonte === 'receitas' ? f.massa_final_g : 30 * Imprimir.DENSIDADE_DECLARADA;      // a fórmula do anúncio viaja num lote de referência de 30 ml
+    const msg = el('div', { class: 'erro' });
+    const nome = el('input', { type: 'text', value: f.titulo.slice(0, 80), 'aria-label': 'Nome do anúncio', style: 'width:100%' });
+    const descricao = el('textarea', { rows: 2, 'aria-label': 'Descrição', placeholder: 'O que quem cheirar vai encontrar (opcional)' });
+    const autor = el('input', { type: 'text', 'aria-label': 'Autor', placeholder: 'seu nome, como você quer assinar (livre — sem conta)', style: 'width:100%' });
+    const pInicial = el('input', { type: 'number', min: 0, step: 0.01, value: Site.PRECO_INICIAL_REF.toFixed(2), 'aria-label': 'Preço inicial (R$)' });
+    const pMl = el('input', { type: 'number', min: 0, step: 0.01, value: Site.PRECO_POR_ML_REF.toFixed(2), 'aria-label': 'Preço por ml adicional (R$)' });
+    const previaBox = el('div');
+    const curva = () => ({ preco_inicial: Number(pInicial.value), preco_por_ml: Number(pMl.value) });
+    function desenharPrevia() {
+      let linhas;
+      try {
+        linhas = Site.previa(curva(), Imprimir.VOLUMES_ML);
+        pInicial.classList.remove('ruim'); pMl.classList.remove('ruim');
+      } catch (e) { previaBox.replaceChildren(el('p', { class: 'falta' }, e.message)); return; }
+      previaBox.replaceChildren(el('table', {},
+        el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Volume'), el('th', { scope: 'col' }, 'Preço da cópia'), el('th', { scope: 'col' }, 'Você recebe'))),
+        el('tbody', {}, ...linhas.map(l => el('tr', {}, el('td', {}, l.ml + ' ml'), el('td', {}, brl(l.preco)), el('td', {}, brl(l.autor)))))));
+    }
+    [pInicial, pMl].forEach(i => i.oninput = desenharPrevia);
+    desenharPrevia();
+    const publicar = el('button', { onclick: () => {
+      msg.textContent = '';
+      try {
+        const anuncio = Site.criar({
+          formula: { titulo: f.titulo, massa_final_g: massaRef, concentracao_pct: f.concentracao_pct || null,
+            itens: f.itens.map(i => ({ id: i.material_id, cas: db.materiais.get(i.material_id).cas, nome: db.materiais.get(i.material_id).nome,
+              gramas: Motor.numeros.pyround(i.fracao * massaRef, 4) })),
+            piramide: Site.piramideDe(db, f.itens.map(i => ({ id: i.material_id }))) },
+          nome: nome.value, descricao: descricao.value, autor: autor.value,
+          preco_inicial: Number(pInicial.value), preco_por_ml: Number(pMl.value),
+          lote_ref_ml: Math.ceil(lote.ml * 10) / 10, lote_ref_maquina: db.maquinas.get(maquina).nome,
+          criada_em: new Date().toISOString() });
+        mkt.adicionar(anuncio);
+        aviso('Anúncio publicado no marketplace local: ' + anuncio.nome + '.', 6000);
+        impModo = 'imprimir';
+        telaImprimirFontes();
+      } catch (e) { msg.textContent = e instanceof Site.ErroDeUso ? e.message : 'Não consegui publicar: ' + e.message; }
+    } }, 'Publicar');
+    t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaPublicarFontes }, '← Escolher outra fórmula')),
+      el('div', { class: 'card' }, el('h2', {}, 'Publicar no marketplace'),
+        el('p', { class: 'dica' }, 'Quem compra recebe a fórmula junto (sem DRM local) e imprime uma cópia de até 100 ml na própria máquina.'),
+        el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Nome ', nome)),
+        descricao,
+        el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Autor ', autor)),
+        el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Preço inicial (R$) ', pInicial),
+          el('label', { class: 'dica' }, 'Preço por ml adicional (R$) ', pMl)),
+        el('p', { class: 'dica' }, 'Defaults: ' + Site.ROTULO_PRECO_REF + '. O preço pode ser ZERO — compartilhar.'),
+        el('p', { class: 'dica' }, el('b', {}, Site.TEXTO_SPLIT), '.'),
+        el('details', { open: true }, el('summary', {}, 'Prévia dos preços'), previaBox),
+        el('p', { class: 'dica' }, el('span', { class: 'chip atencao' }, 'lote mínimo de referência ' + fmt(lote.ml) + ' ml'),
+          ' calculado contra a ' + db.maquinas.get(maquina).nome + ' — na máquina de quem imprime pode mudar (as diluições dos vidros dela mudam o lote).'),
+        msg,
+        el('div', { class: 'linha', style: 'margin-top:8px' }, publicar)));
+  }
+
   async function formulaImp() {
+    if (imp.fonte === 'anuncio') {                             // a fórmula EMBUTIDA do anúncio (decisão 9): gramas sobre o lote de referência
+      const a = mkt.achar(imp.id);
+      if (!a) throw new Motor.ErroDeUso('anúncio não encontrado — ele pode ter sido removido');
+      const f = Imprimir.daReceita(Object.fromEntries(a.formula.itens.map(i => [i.id, i.gramas])), a.formula.massa_final_g, a.nome, null, {});
+      return { ...f, fonte: 'anuncio', anuncio: a };
+    }
     if (imp.fonte === 'receitas') {
       const j = await api('/api/receita', { id: imp.id, maquina, tecnico: false }), r = j.receita;
       const f = Imprimir.daReceita(Object.fromEntries(r.itens.map(i => [i.id, i.gramas])), r.massa_final_g, r.nome, r.nota, r.respostas);
@@ -795,6 +1003,7 @@
     const g = ml === null ? 0 : ml * Imprimir.DENSIDADE_DECLARADA;
     const pch = ml === null ? null : Imprimir.prechecagem(db, app, maquina, f, g, f.titulo);
     const msgs = el('span', { class: 'dica', role: 'status' });
+    const precoCopia = f.fonte === 'anuncio' && ml !== null && !Site.ehGratis(f.anuncio) ? Site.preco(f.anuncio, ml) : null;   // decisão 3: a curva do anúncio no volume escolhido
     const btFolha = el('button', { disabled: !pch || !pch.ok, title: pch && pch.bloqueios.length ? pch.bloqueios[0] : '',
       onclick: async () => {
         msgs.textContent = '';
@@ -808,11 +1017,15 @@
         JSON.stringify(Imprimir.arquivoDaFormula(db, f, g, new Date().toISOString()), null, 1));
       msgs.textContent = 'Fórmula exportada — quem imprime recebe a fórmula.';
     } }, 'Exportar fórmula (.json)');
-    const rotFonte = { receitas: 'minha receita', acordes: 'acorde do banco', biblioteca: 'acorde da biblioteca' }[f.fonte];
+    const rotFonte = { receitas: 'minha receita', acordes: 'acorde do banco', biblioteca: 'acorde da biblioteca', anuncio: 'anúncio do marketplace' }[f.fonte];
     const porLote = sel.opcoes.find(o => o.desabilitada === 'lote'), porMaquina = sel.opcoes.find(o => o.desabilitada === 'maquina');
     t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaImprimirFontes }, '← Escolher outra fórmula')),
       el('div', { class: 'card' },
-        el('div', { class: 'linha' }, el('h2', { style: 'margin:0;flex:1' }, f.titulo), el('span', { class: 'badge' }, rotFonte), el('span', { class: 'badge' }, 'grátis')),
+        el('div', { class: 'linha' }, el('h2', { style: 'margin:0;flex:1' }, f.titulo), el('span', { class: 'badge' }, rotFonte),
+          f.fonte === 'anuncio' ? el('span', { class: 'badge' }, Site.ehGratis(f.anuncio) ? 'grátis — compartilhado' : Site.textoPreco(f.anuncio))
+            : el('span', { class: 'badge' }, 'grátis')),
+        ...(f.fonte === 'anuncio' ? [el('p', { class: 'dica' }, 'Anúncio de ' + (f.anuncio.autor || 'autor não assinado')
+          + ' · o anúncio declara lote mínimo de referência de ' + fmt(f.anuncio.lote_ref_ml) + ' ml — na sua máquina vale o calculado acima.')] : []),
         el('table', {}, el('tbody', {}, ...f.itens.map(i => el('tr', {},
           el('td', {}, Motor.nome_curto(db.materiais.get(i.material_id).nome, 46)), el('td', {}, fmt(i.fracao * 100) + '%'))))),
         ...(f.concentracao_pct ? [el('p', { class: 'dica' }, 'Acorde dosado a ' + fmt(f.concentracao_pct)
@@ -842,7 +1055,122 @@
       el('div', { class: 'card' }, el('h2', {}, 'Imprimir'),
         el('p', { class: 'dica' }, pch && pch.ok ? 'Tudo conferido: a folha traz a fórmula e a dosagem vidro por vidro.'
           : 'O botão liga quando a conferência acima passar.'),
-        el('div', { class: 'linha' }, btFolha, btExportar), msgs));
+        ...(precoCopia !== null ? [el('p', {}, 'Preço desta cópia (' + ml + ' ml): ', el('b', {}, brl(precoCopia)),
+          el('span', { class: 'dica' }, ' — ' + Site.TEXTO_SPLIT + '; ' + Site.TEXTO_GATEWAY + '.'))] : []),
+        el('div', { class: 'linha' }, btFolha, btExportar,
+          f.fonte !== 'anuncio' ? el('button', { class: 'sec', onclick: () => { impModo = 'publicar'; telaPublicarFormula(); } }, 'Publicar no marketplace') : ''), msgs));
+  }
+
+  // ------------------------------------------------------------------ reposição de químico (decisão 13, docs/11 §1.5.5)
+  /* Canal acabando → as ofertas REAIS da tabela `oferta` que o exportar_pwa.py traz no dados.json, com o link da
+   * loja — deep-link de carrinho Shopify quando a oferta tiver variante (a coleta ainda não traz: pendência).
+   * Compra manual, nada automático; sem oferta do material, o painel diz honestamente. */
+  function telaReposicao(c) {
+    const mat = c.material_id ? db.materiais.get(c.material_id) : null;
+    const voltar = el('button', { class: 'sec', onclick: telaMapa }, '← Voltar ao mapa');
+    if (!mat) {
+      $('#tela').replaceChildren(voltar, el('div', { class: 'card' }, el('h2', {}, 'Repor químico'),
+        el('p', { class: 'falta' }, 'Escolha o material deste vidro no mapa antes de ver ofertas.')));
+      return;
+    }
+    const info = Site.acabando(c), ofertas = Site.ofertasDo(cru, mat.id);
+    $('#tela').replaceChildren(voltar,
+      el('div', { class: 'card' }, el('h2', {}, 'Repor ' + mat.nome),
+        el('p', {}, el('span', { class: 'chip atencao' }, 'acabando'), ' ', Site.textoAcabando(info) + '.'),
+        info.teorico ? el('p', { class: 'dica' }, 'Estoque teórico: este vidro não tem densidade cadastrada — calibre o vidro para conferir em gramas.') : '',
+        el('p', { class: 'dica' }, 'Sugestão: 1 frasco. Compra manual — o app não fecha pedido nem paga por você; parceria formal com as lojas é pendência.'),
+        ...(ofertas.length ? ofertas.map(o => el('div', { class: 'vidro' },
+            el('div', { class: 'linha' }, el('b', { style: 'flex:1' }, o.loja),
+              o.estoque ? el('span', { class: 'chip ok' }, 'em estoque') : el('span', { class: 'chip atencao' }, 'estoque não conferido')),
+            el('p', { class: 'dica' }, [o.preco === null || o.preco === undefined ? null : 'preço visto: ' + brl(o.preco),
+              o.tamanho, o.diluicao ? 'diluição ' + o.diluicao : null].filter(Boolean).join(' · ') || 'sem preço anotado na coleta'),
+            ...(o.url ? [el('div', { class: 'linha' }, el('a', { href: Site.carrinho(o), target: '_blank', rel: 'noopener' },
+              o.variante ? 'Comprar 1 frasco (carrinho ' + o.loja + ')' : 'Ver produto na ' + o.loja))] : [])))
+          : [el('p', { class: 'falta' }, 'Nenhuma loja da coleta tem oferta para este material ainda.')])));
+  }
+
+  // ------------------------------------------------------------------ vínculo da máquina (F0, docs/11 §1.2/§1.6)
+  /* A telinha do ESP32 mostra o QR `perfume://vincular?d=<id>&c=<código>`; aqui se cola o código (ou escaneia o QR,
+   * quando o navegador tem BarcodeDetector). Registro LOCAL e revogável — a sincronização com servidor é a pendência
+   * F0-nuvem, declarada na tela. O "testar conexão" é o único fetch: status da máquina na rede local (PROTOCOLO.md);
+   * falha de rede é AVISO, nunca erro do app. */
+  function blocoVinculo() {
+    const box = el('div', { class: 'card' }), msg = el('div', { class: 'erro' });
+    const codigo = el('input', { type: 'text', placeholder: 'perfume://vincular?d=ESP32-xxxx&c=123456', 'aria-label': 'Código de vínculo da telinha', style: 'width:100%' });
+    const nome = el('input', { type: 'text', placeholder: 'nome desta máquina (opcional)', 'aria-label': 'Nome da máquina vinculada', style: 'width:100%' });
+    const ip = el('input', { type: 'text', placeholder: '192.168.0.20', 'aria-label': 'IP da máquina na rede local' });
+    const status = el('p', { class: 'dica', role: 'status' });
+    function desenhar() {
+      box.replaceChildren(el('h2', {}, 'Máquina vinculada'),
+        el('p', { class: 'dica' }, 'Cole o código que a telinha da máquina mostra (ou escaneie o QR). ' + Site.ESTADO_HONESTO + '.'),
+        codigo, nome, msg,
+        el('div', { class: 'linha', style: 'margin-top:6px' },
+          el('button', { onclick: () => {
+            msg.textContent = '';
+            try {
+              const r = vinc.vincular(codigo.value, nome.value);
+              aviso('Máquina ' + r.dispositivo + ' vinculada (registro local).', 5000);
+              codigo.value = ''; nome.value = '';
+              desenhar();
+            } catch (e) { msg.textContent = e.message; }
+          } }, 'Vincular'),
+          ...('BarcodeDetector' in window ? [el('button', { class: 'sec', onclick: () => escanearQR(t => { codigo.value = t; }) }, 'Escanear QR')] : [])),
+        ...vinc.listar().map(v => el('div', { class: 'linha' },
+          el('span', { style: 'flex:1' }, el('b', {}, v.nome), ' ', el('span', { class: 'dica' }, v.dispositivo + ' · desde ' + data(v.vinculado_em))),
+          el('button', { class: 'sec', onclick: () => { vinc.revogar(v.id); desenhar(); } }, 'Revogar'))),
+        el('div', { class: 'linha', style: 'margin-top:6px' }, el('label', { class: 'dica' }, 'IP na rede local ', ip),
+          el('button', { class: 'sec', onclick: () => testarConexao(ip.value, status) }, 'Testar conexão')),
+        status);
+    }
+    desenhar();
+    return box;
+  }
+
+  /* A câmera lê o QR da telinha quando o navegador oferece BarcodeDetector (Chrome/Android); nos outros, colar o
+   * código continua sendo o caminho — nada quebra. */
+  async function escanearQR(achou) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const video = el('video', { autoplay: true, playsinline: true, style: 'width:100%;max-width:360px' });
+      video.srcObject = stream;
+      const painel = el('div', { style: 'margin-top:8px' }, video,
+        el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: () => { stream.getTracks().forEach(x => x.stop()); painel.remove(); } }, 'Parar câmera')));
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const ler = async () => {
+        if (!painel.isConnected) { stream.getTracks().forEach(x => x.stop()); return; }
+        try {
+          const achados = await detector.detect(video);
+          if (achados.length) { achou(achados[0].rawValue); stream.getTracks().forEach(x => x.stop()); painel.remove(); return; }
+        } catch { /* quadro ainda sem imagem: tenta de novo */ }
+        requestAnimationFrame(ler);
+      };
+      $('#tela').append(painel);
+      requestAnimationFrame(ler);
+    } catch (e) { aviso('Não consegui abrir a câmera (' + e.message + ') — cole o código à mão.', 6000); }
+  }
+
+  /* GET http://<ip>/api/status com timeout curto. De página https o navegador bloqueia http (mixed content):
+   * aviso de rede, não erro do app — o resto continua offline como sempre. */
+  async function testarConexao(ipTexto, status) {
+    const bruto = (ipTexto || '').trim();
+    const url = /^https?:\/\//.test(bruto) ? bruto : (/^\d+(\.\d+){3}$/.test(bruto) ? 'http://' + bruto + '/api/status' : null);
+    if (!url) { status.className = 'falta'; status.textContent = 'Digite o IP (ex. 192.168.0.20) ou a URL completa.'; return; }
+    status.className = 'dica'; status.textContent = 'Testando ' + url + '…';
+    const Abortar = new AbortController();
+    const timer = setTimeout(() => Abortar.abort(), 3500);
+    try {
+      const r = await fetch(url, { signal: Abortar.signal });
+      const j = await r.json();
+      status.className = 'ok';
+      status.textContent = '✔ Máquina respondeu: ' + j.estado
+        + (j.itens_totais ? ' · item ' + j.item_atual + '/' + j.itens_totais : '') + ' · ligada há ' + fmt(Math.round((j.uptime_s || 0) / 60)) + ' min';
+    } catch (e) {
+      status.className = 'falta';
+      status.textContent = 'Não chegou ao ' + url + ' ('
+        + (e.name === 'AbortError' ? 'tempo esgotado — 3,5 s'
+          : location.protocol === 'https:' && url.startsWith('http:') ? 'página https não acessa http: mixed content do navegador'
+          : e.message) + '). Confira o IP e se o celular está na MESMA rede da máquina — o app segue funcionando offline.';
+    } finally { clearTimeout(timer); }
   }
 
   // ---------------------------------------------------------------------------------------------- nariz digital (o especialista)

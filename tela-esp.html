@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Máquina de Perfumes — protótipo da telinha (ESP32 · MKS TS35-R)</title>
+<style>
+  /* ==========================================================================
+     Protótipo navegável da telinha do ESP32 (leva ESP-1, 09/10).
+     Mesmas telas do firmware (software/firmware/src/tela/aplicacao.cpp):
+     Status · Dosagem · Vínculo · Avisos · Config. Auto-suficiente: sem build,
+     sem rede — abrir no navegador. Tema ESCURO por padrão, claro no botão
+     (regra visual do dono: "bonito, moderno, tema escuro e claro").
+     ========================================================================== */
+  :root {
+    --fundo: #0B0E14; --pagina: #05070B;
+    --cartao: #161B26; --texto: #E8ECF4; --fraco: #8B93A7;
+    --destaque: #5B8DEF; --ok: #39C48F; --erro: #E5484D;
+    --borda: #232A3A; --chip: #1C2332;
+  }
+  [data-tema="claro"] {
+    --fundo: #F2F4F8; --pagina: #E4E8EF;
+    --cartao: #FFFFFF; --texto: #14181F; --fraco: #5C6470;
+    --destaque: #2F6BDE; --ok: #0E8A5F; --erro: #C13A3F;
+    --borda: #D5DAE3; --chip: #EDF0F5;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 700px at 50% -10%, var(--pagina), #000 130%);
+    background-color: var(--pagina);
+    font-family: -apple-system, "SF Pro Display", "Inter", "Segoe UI", Roboto, sans-serif;
+    color: var(--texto);
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100%; padding: 28px 16px 40px; gap: 18px;
+  }
+  header.topo { text-align: center; max-width: 720px; }
+  header.topo h1 { font-size: 19px; font-weight: 700; letter-spacing: .2px; }
+  header.topo p { color: var(--fraco); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+
+  /* ---- moldura do dispositivo (TS35-R 480×320) ---- */
+  .moldura {
+    background: linear-gradient(160deg, #2A2F3A, #14171E);
+    border-radius: 26px; padding: 22px 22px 30px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.08);
+    position: relative;
+  }
+  .moldura::after { /* "câmera"/parafuso decorativo */
+    content: ""; position: absolute; right: 34px; bottom: 9px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #666, #111);
+  }
+  .tela {
+    width: 480px; height: 320px; border-radius: 8px; overflow: hidden;
+    background: var(--fundo); position: relative; user-select: none;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.6);
+    transform-origin: top center;
+  }
+  /* escala em telas menores */
+  @media (max-width: 560px) {
+    .tela { transform: scale(calc((100vw - 76px) / 480)); }
+    .moldura { padding-bottom: 40px; }
+  }
+
+  /* ---- componentes da tela ---- */
+  .barra-topo {
+    height: 44px; background: var(--cartao); display: flex;
+    align-items: center; justify-content: center; position: relative;
+    font-size: 15px; font-weight: 700;
+  }
+  .barra-topo .dir { position: absolute; right: 12px; color: var(--fraco); font-size: 10.5px; font-weight: 500; }
+  .corpo { height: 276px; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+
+  .grade-botoes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+  .botao-grande {
+    background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px;
+    height: 64px; display: flex; align-items: center; justify-content: center;
+    color: var(--destaque); font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: transform .06s ease, filter .15s;
+  }
+  .botao-grande:active { transform: scale(.97); filter: brightness(1.15); }
+
+  .cartao {
+    background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px;
+    padding: 7px 14px 9px; display: flex; flex-direction: column; gap: 1px;
+  }
+  .cartao .rot { font-size: 10px; color: var(--fraco); letter-spacing: .4px; text-transform: uppercase; }
+  .cartao .val { font-size: 15px; font-weight: 700; }
+  .cartao .val.mono { font-variant-numeric: tabular-nums; }
+
+  .rodape { margin-top: auto; text-align: center; color: var(--fraco); font-size: 10.5px; }
+  .rodape.ok { color: var(--ok); font-weight: 600; }
+  .rodape.erro { color: var(--erro); font-weight: 600; }
+
+  .barra-prog { height: 20px; border-radius: 10px; background: var(--chip); overflow: hidden; border: 1px solid var(--borda); }
+  .barra-prog > div { height: 100%; background: linear-gradient(90deg, var(--destaque), #7FA8F5); width: 0%; transition: width .3s; }
+  [data-tema="claro"] .barra-prog > div { background: linear-gradient(90deg, var(--destaque), #6C97E8); }
+
+  /* vínculo */
+  .vinculo { display: flex; gap: 14px; align-items: center; margin-top: 2px; }
+  .qrbox {
+    width: 158px; height: 158px; background: #fff; border-radius: 10px; padding: 9px;
+    display: grid; flex: none;
+  }
+  .qrbox canvas { width: 100%; height: 100%; image-rendering: pixelated; }
+  .vinculo .info { display: flex; flex-direction: column; gap: 8px; }
+  .chip {
+    background: var(--chip); border: 1px solid var(--borda); border-radius: 999px;
+    padding: 4px 12px; font-size: 11px; color: var(--fraco);
+  }
+  .codigo { font-size: 26px; font-weight: 800; letter-spacing: 3px; font-variant-numeric: tabular-nums; }
+
+  /* avisos */
+  .aviso-item {
+    background: var(--cartao); border: 1px solid var(--borda); border-left: 4px solid var(--erro);
+    border-radius: 10px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .aviso-item.info { border-left-color: var(--destaque); }
+  .aviso-item.ok { border-left-color: var(--ok); }
+  .aviso-item .qnd { color: var(--fraco); font-size: 10.5px; }
+
+  /* config */
+  .config-linha { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .campo {
+    background: var(--cartao); border: 1px solid var(--borda); border-radius: 10px;
+    padding: 8px 12px; cursor: pointer; font-size: 12px;
+  }
+  .campo.ativo { border-color: var(--destaque); }
+  .campo .rot { font-size: 10px; color: var(--fraco); }
+  .campo .val { font-weight: 600; font-size: 13px; }
+  .acao {
+    border-radius: 10px; height: 44px; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  .acao.primaria { background: var(--destaque); color: #fff; }
+  .acao.secundaria { background: var(--cartao); border: 1px solid var(--borda); color: var(--texto); }
+
+  /* teclado */
+  .teclado { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
+  .tecla {
+    background: var(--cartao); border: 1px solid var(--borda); border-radius: 6px;
+    height: 34px; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; cursor: pointer;
+  }
+  .tecla:active { background: var(--destaque); color: #fff; }
+  .tecla.fn { color: var(--destaque); font-size: 10px; }
+  .tecla.apagar { color: var(--erro); }
+  .tecla.ok { background: var(--destaque); color: #fff; font-weight: 700; }
+  .visor-teclado {
+    background: var(--cartao); border: 1px solid var(--destaque); border-radius: 8px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between;
+  }
+  .visor-teclado span:last-child { color: var(--fraco); font-weight: 500; font-size: 11px; }
+
+  /* controles da página (fora da telinha) */
+  .controles { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .controles button {
+    background: var(--cartao); color: var(--texto); border: 1px solid var(--borda);
+    padding: 9px 16px; border-radius: 999px; font-size: 12.5px; cursor: pointer; font-weight: 600;
+  }
+  .controles button:hover { border-color: var(--destaque); }
+  .nota { color: var(--fraco); font-size: 11.5px; max-width: 620px; text-align: center; line-height: 1.6; }
+  .nota b { color: var(--texto); }
+  kbd { background: var(--chip); border: 1px solid var(--borda); border-radius: 4px; padding: 0 5px; font-size: 10.5px; }
+</style>
+</head>
+<body data-tema="escuro">
+
+<header class="topo">
+  <h1>Protótipo da telinha — ESP32 · MKS DLC32 + TS35-R</h1>
+  <p>As mesmas telas do firmware (<code>src/tela/aplicacao.cpp</code>), navegáveis aqui.
+     Tudo simulado — nenhuma conexão. No dispositivo real o QR é gerado de verdade.</p>
+</header>
+
+<div class="moldura">
+  <div class="tela" id="tela">
+    <div class="barra-topo"><span id="titulo">Máquina de Perfumes</span><span class="dir" id="tituloDir"></span></div>
+    <div class="corpo" id="corpo"></div>
+  </div>
+</div>
+
+<div class="controles">
+  <button onclick="simularDose()">▶ Simular dosagem</button>
+  <button onclick="gerarAviso()">⚠ Simular aviso</button>
+  <button onclick="trocarTema()">◐ Tema claro/escuro</button>
+</div>
+<p class="nota">
+  <b>Vínculo:</b> o QR carrega <kbd>perfume://vincular?d=&lt;aparelho&gt;&amp;c=&lt;código&gt;</kbd> —
+  o app escaneia e a nuvem registra a posse (F0 do docs/11 §1.4).<br>
+  <b>Dosagem:</b> a tela entra sozinha quando a fila começa e volta ao menu ao terminar.
+</p>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- estado ----
+const S = {
+  menu: "principal",            // principal|status|dose|vinculo|avisos|config|teclado
+  tema: "escuro",
+  wifi: { ssid: "MINHA_REDE", senha: "••••••••" },
+  editandoSenha: false,
+  campo: { ssid: "", senha: "" },
+  estado: "idle",               // idle|dosando|erro
+  ip: "192.168.0.42",
+  peso: 0.0,
+  formula: { nome: "Ambre 51", atual: 0, total: 6, canal: 3, alvo: 0.842 },
+  doseAnim: null,
+  avisos: [],                   // {texto, quando, tipo}
+  boot: Date.now() - 3723e3,
+};
+const APELIDO = "A1B2C3D4E5F6";
+const CODIGO = (() => { // mesmo FNV-1a do firmware (src/vinculo.h)
+  let h = 2166136261 >>> 0;
+  for (const c of APELIDO) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  return String(h % 1000000).padStart(6, "0");
+})();
+
+// ------------------------------------------------------------- QR fake ------
+// No dispositivo: lib de QR real (matriz). Aqui: padrão determinístico do
+// payload (mesmo texto → mesmo desenho), só para visual.
+function desenharQR(canvas, texto) {
+  const N = 29, pad = 2, tot = N + pad * 2;
+  canvas.width = canvas.height = tot * 8;
+  const g = canvas.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, canvas.width, canvas.height);
+  let h = 2166136261 >>> 0;
+  for (const c of texto) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  const prng = () => { h ^= h << 13; h >>>= 0; h ^= h >> 17; h ^= h << 5; h >>>= 0; return h / 4294967296; };
+  g.fillStyle = "#000";
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const achou =
+      (x < 7 && y < 7) || (x >= N - 7 && y < 7) || (x < 7 && y >= N - 7) // olhos
+      ? (((x % 6 === 0 || y % 6 === 0 || (x >= 2 && x <= 4 && y >= 2 && y <= 4)) && !(x === 5 && y === 5)) ||
+         (x >= N - 7 && (x === N - 7 || x === N - 1 || (y >= 2 && y <= 4 && x >= N - 6 && x <= N - 4))) )
+      : prng() < 0.45;
+    if (achou) g.fillRect((x + pad) * 8, (y + pad) * 8, 8, 8);
+  }
+}
+
+// ------------------------------------------------------------ utilidades ----
+const $ = (id) => document.getElementById(id);
+function atraso(ms) { return new Promise(r => setTimeout(r, ms)); }
+function uptime() {
+  const s = Math.floor((Date.now() - S.boot) / 1000);
+  return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// ----------------------------------------------------------------- telas ----
+function telaPrincipal() {
+  $("titulo").textContent = "Máquina de Perfumes";
+  $("tituloDir").textContent = "";
+  $("corpo").innerHTML = `
+    <div class="grade-botoes">
+      <div class="botao-grande" onclick="ir('status')">Status</div>
+      <div class="botao-grande" onclick="ir('vinculo')">Vínculo</div>
+      <div class="botao-grande" onclick="ir('avisos')">Avisos</div>
+      <div class="botao-grande" onclick="ir('config')">Config</div>
+    </div>
+    <div class="rodape" id="rodapePrincipal">estado: ${S.estado} · ${S.ip}</div>`;
+}
+function telaStatus() {
+  $("titulo").textContent = "Status";
+  $("tituloDir").textContent = "online";
+  $("corpo").innerHTML = `
+    <div class="cartao"><span class="rot">WiFi (SSID)</span><span class="val">${S.wifi.ssid}</span></div>
+    <div class="cartao"><span class="rot">Endereço IP</span><span class="val">${S.ip}</span></div>
+    <div class="cartao"><span class="rot">Estado</span><span class="val">${S.estado}</span></div>
+    <div class="config-linha">
+      <div class="cartao"><span class="rot">Peso na balança</span><span class="val mono">${S.peso.toFixed(3)} g</span></div>
+      <div class="cartao"><span class="rot">Uptime</span><span class="val mono">${uptime()}</span></div>
+    </div>
+    <div class="rodape">tocar para voltar</div>`;
+}
+function telaDose() {
+  const f = S.formula;
+  $("titulo").textContent = "Dosagem em curso";
+  $("tituloDir").textContent = f.nome;
+  const frac = f.total ? f.atual / f.total : 0;
+  $("corpo").innerHTML = `
+    <div class="config-linha">
+      <div class="cartao"><span class="rot">Item</span><span class="val">${Math.min(f.atual + 1, f.total)} / ${f.total}</span></div>
+      <div class="cartao"><span class="rot">Canal</span><span class="val">${f.canal}</span></div>
+    </div>
+    <div class="config-linha">
+      <div class="cartao"><span class="rot">Alvo</span><span class="val mono">${f.alvo.toFixed(3)} g</span></div>
+      <div class="cartao"><span class="rot">Obtido (balança)</span><span class="val mono" id="obtido">${S.peso.toFixed(3)} g</span></div>
+    </div>
+    <div class="barra-prog" style="margin-top:4px"><div id="progDose" style="width:${(frac * 100).toFixed(1)}%"></div></div>
+    <div class="rodape ${S.estado === "erro" ? "erro" : S.estado === "dosando" ? "" : "ok"}" id="rodapeDose">${
+      S.estado === "erro" ? "erro — ver Avisos" : S.estado === "dosando" ? `dosando… ${f.nome}` : "concluída — tocar para voltar"}</div>`;
+}
+function telaVinculo() {
+  $("titulo").textContent = "Vínculo com a conta";
+  $("tituloDir").textContent = "";
+  $("corpo").innerHTML = `
+    <div class="vinculo">
+      <div class="qrbox"><canvas id="qrCanvas"></canvas></div>
+      <div class="info">
+        <span class="chip">aparelho ${APELIDO}</span>
+        <div><div class="rot" style="font-size:10px;color:var(--fraco);margin-bottom:2px">CÓDIGO</div>
+        <div class="codigo">${CODIGO}</div></div>
+        <span class="chip">escaneie no app ou digite o código</span>
+      </div>
+    </div>
+    <div class="rodape">tocar para voltar</div>`;
+  desenharQR($("qrCanvas"), `perfume://vincular?d=${APELIDO}&c=${CODIGO}`);
+}
+function telaAvisos() {
+  $("titulo").textContent = "Avisos";
+  $("tituloDir").textContent = "";
+  const itens = S.avisos.length
+    ? S.avisos.map(a => `
+      <div class="aviso-item ${a.tipo}">
+        <span>${a.texto}</span><span class="qnd">há ${Math.max(1, Math.round((Date.now() - a.quando) / 1000))}s</span>
+      </div>`).join("")
+    : `<div style="text-align:center;color:var(--fraco);margin-top:70px;font-size:15px">nenhum aviso</div>`;
+  $("corpo").innerHTML = `${itens}
+    <div class="rodape">estoque de químicos: veja no app · tocar para voltar</div>`;
+}
+function telaConfig() {
+  $("titulo").textContent = "Configuração";
+  $("tituloDir").textContent = "";
+  const ssid = S.campo.ssid || S.wifi.ssid;
+  const temSenha = S.campo.senha || S.wifi.senha;
+  $("corpo").innerHTML = `
+    <div class="campo ${!S.editandoSenha ? "ativo" : ""}" onclick="abrirTeclado(false)">
+      <span class="rot">SSID</span><span class="val">${ssid}</span></div>
+    <div class="campo ${S.editandoSenha ? "ativo" : ""}" onclick="abrirTeclado(true)">
+      <span class="rot">SENHA</span><span class="val">${temSenha ? "••••••••" : "(vazia)"}</span></div>
+    <div class="config-linha" style="margin-top:2px">
+      <div class="acao primaria" onclick="salvarWifi()">Salvar WiFi</div>
+      <div class="acao secundaria" onclick="trocarTema()">${S.tema === "claro" ? "Tema: claro" : "Tema: escuro"}</div>
+    </div>
+    <div class="rodape">salvar grava em /wifi.json — reinicie o ESP</div>`;
+}
+function telaTeclado() {
+  $("titulo").textContent = "Configuração";
+  $("tituloDir").textContent = "";
+  const linhas = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm-_."];
+  const teclas = linhas.map(l => [...l].map(c =>
+    `<div class="tecla" onclick="digitar('${c}')">${c}</div>`).join("")).join("");
+  const visor = S.editandoSenha ? (S.campo.senha || "_") : (S.campo.ssid || "_");
+  $("corpo").innerHTML = `
+    <div class="visor-teclado"><span>${visor}</span><span>${S.editandoSenha ? "senha do WiFi" : "nome do WiFi (SSID)"}</span></div>
+    <div class="teclado">${teclas}
+      <div class="tecla fn" style="grid-column: span 4" onclick="digitar(' ')">espaço</div>
+      <div class="tecla fn" style="grid-column: span 2" onclick="trocarCampo()">${S.editandoSenha ? ">SSID" : ">senha"}</div>
+      <div class="tecla fn apagar" style="grid-column: span 2" onclick="apagar()">apagar</div>
+      <div class="tecla ok" style="grid-column: span 2" onclick="ir('config')">OK</div>
+    </div>`;
+}
+
+// -------------------------------------------------------------- navegação ---
+const TELAS = { principal: telaPrincipal, status: telaStatus, dose: telaDose,
+                vinculo: telaVinculo, avisos: telaAvisos, config: telaConfig,
+                teclado: telaTeclado };
+function ir(menu) { S.menu = menu; TELAS[menu](); }
+function refletirTema() { document.body.dataset.tema = S.tema; }
+function trocarTema() { S.tema = S.tema === "escuro" ? "claro" : "escuro"; refletirTema(); if (S.menu === "config") telaConfig(); }
+function abrirTeclado(senha) { S.editandoSenha = senha; ir("teclado"); }
+function trocarCampo() { S.editandoSenha = !S.editandoSenha; telaTeclado(); }
+function digitar(c) {
+  const k = S.editandoSenha ? "senha" : "ssid";
+  if (S.campo[k].length < (k === "senha" ? 64 : 32)) S.campo[k] += c;
+  telaTeclado();
+}
+function apagar() {
+  const k = S.editandoSenha ? "senha" : "ssid";
+  S.campo[k] = S.campo[k].slice(0, -1);
+  telaTeclado();
+}
+function salvarWifi() {
+  if (S.campo.ssid) S.wifi.ssid = S.campo.ssid;
+  if (S.campo.senha) S.wifi.senha = S.campo.senha;
+  S.avisos.unshift({ texto: "WiFi salvo — reinicie o ESP", quando: Date.now(), tipo: "ok" });
+  ir("config");
+}
+
+// ------------------------------------------------------------ simulações ----
+async function simularDose() {
+  if (S.doseAnim) return;
+  S.estado = "dosando";
+  S.peso = 0;
+  S.formula.atual = 0;
+  if (S.menu === "principal") ir("dose"); else telaDose();
+  for (let item = 0; item < S.formula.total; item++) {
+    S.formula.atual = item;
+    S.formula.canal = (item * 7 + 3) % 20;
+    S.formula.alvo = 0.2 + ((item * 37) % 90) / 100;
+    for (let p = 0; p <= 20; p++) {
+      S.peso = S.formula.alvo * p / 20;
+      if (S.menu === "dose") {
+        telaDose();
+        const o = document.getElementById("obtido");
+        if (o) o.textContent = `${S.peso.toFixed(3)} g`;
+        const b = document.getElementById("progDose");
+        if (b) b.style.width = `${((item + p / 20) / S.formula.total * 100).toFixed(1)}%`;
+        await atraso(70);
+      } else await atraso(70);
+    }
+    S.peso = 0; // troca de frasco (tara)
+  }
+  S.estado = "idle";
+  S.formula.atual = S.formula.total;
+  S.doseAnim = null;
+  if (S.menu === "dose") { telaDose(); await atraso(1200); ir("principal"); }
+}
+function gerarAviso() {
+  const exemplos = [
+    ["Canal 7: SEM FLUXO", "erro"], ["Canal 12: VAZAMENTO", "erro"],
+    ["Canal 3: ESTOURO", "erro"], ["mesa: homing falhou (endstops?)", "erro"],
+    ["WiFi salvo — reinicie o ESP", "ok"], ["atualização instalada", "info"],
+  ];
+  const [texto, tipo] = exemplos[Math.floor(Math.random() * exemplos.length)];
+  S.avisos.unshift({ texto, quando: Date.now(), tipo });
+  S.avisos = S.avisos.slice(0, 4);
+  if (S.menu === "avisos") telaAvisos();
+}
+
+// atalhos de teclado (como se fosse toque)
+addEventListener("keydown", (e) => {
+  if (S.menu === "teclado") {
+    if (e.key === "Backspace") return apagar();
+    if (e.key.length === 1) return digitar(e.key);
+  }
+  if (e.key === "Escape" && !["principal", "dose"].includes(S.menu)) ir("principal");
+});
+
+// boot
+ir("principal");
+</script>
+</body>
+</html>
