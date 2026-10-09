@@ -18,7 +18,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const VOLUMES_ML = Array.from({ length: 20 }, (_, i) => 5 * (i + 1));   // a grade das decisões 3 e 14: 5, 10, 15 … 100 ml
+  const VOLUMES_ML = Array.from({ length: 10 }, (_, i) => 5 * (i + 1));   // 5, 10, 15 … 50 ml: teto de 50 ml decidido pelo dono em 09/10
   const DENSIDADE_DECLARADA = 0.83;        // g/ml — a aproximação declarada do projeto (guia de montagem dos vidros)
   const RESERVA_ESTOQUE = 0.05;            // a mesma do validador: a linha "não cobre" acompanha o bloqueio do motor
   const CONCENTRACAO_PADRAO = 15.0;        // o PADRAO do Brief do motor: acorde é CONCENTRADO — o motor dosaria 15% e completaria com etanol

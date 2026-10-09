@@ -982,7 +982,7 @@
     } }, 'Publicar');
     t.replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: telaPublicarFontes }, '← Escolher outra fórmula')),
       el('div', { class: 'card' }, el('h2', {}, 'Publicar no marketplace'),
-        el('p', { class: 'dica' }, 'Quem compra recebe a fórmula junto (sem DRM local) e imprime uma cópia de até 100 ml na própria máquina'
+        el('p', { class: 'dica' }, 'Quem compra recebe a fórmula junto (sem DRM local) e imprime uma cópia de até 50 ml na própria máquina'
           + ' — a ' + maqRef.nome + ' de hoje dosa até ' + fmt(mlMax) + ' ml por lote.'),
         ...(incompleta ? [el('p', { class: 'falta' }, incompleta)] : []),
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Nome ', nome)),

@@ -24,7 +24,7 @@
   const FORMATO_ANUNCIO = 'perfume.anuncio.v1';        // o "produto" transferível por arquivo até haver nuvem
   const CHAVE_MARKETPLACE = 'perfume.marketplace.v1';  // os anúncios que ESTE aparelho conhece (publicados ou importados)
   const PRECO_INICIAL_REF = 1.00;                      // o padrão do formulário — rotulado junto dos exemplos do dono (§1.5.3)
-  const PRECO_POR_ML_REF = 0.01;
+  const PRECO_POR_ML_REF = 0.02;                       // decisão do dono 09/10: R$ 1 até 5 ml + R$ 0,02 por ml (10 ml = R$ 1,10)
   const ML_DA_BASE = 5;                                // o valor inicial cobre os 5 ml; o ml adicional entra por cima (decisão 3)
   const SPLIT = { autor: 0.9, plataforma: 0.1 };       // decisão 11: plataforma fica com 10%
   const TEXTO_SPLIT = 'você recebe 90% de cada impressão paga — plataforma 10%';
@@ -60,13 +60,12 @@
     return { autor, plataforma };
   }
 
-  /* O rótulo honesto do padrão: os três exemplos do dono (docs/11 §1.5.3) NÃO cabem numa reta (de 5 para 10 ml sobe
-   * R$ 0,10; de 10 para 100 ml, só R$ 0,90), então o padrão do formulário é uma reta escolhida aqui, e o rótulo diz o
-   * que ela dá — números calculados pela própria curva, não escritos à mão. A curva exata é decisão do dono. */
+  /* O rótulo do padrão: a reta que o dono DECIDIU em 09/10 (os três exemplos do docs/11 §1.5.3 não cabiam numa reta;
+   * ele ficou com a que acerta o 10 ml), com o que ela dá calculado pela própria curva — não escrito à mão. O teto do
+   * frasco é 50 ml (também decisão de 09/10), então o rótulo vai até lá. O autor pode mudar os dois valores. */
   const REF = { preco_inicial: PRECO_INICIAL_REF, preco_por_ml: PRECO_POR_ML_REF };
-  const ROTULO_PRECO_REF = `padrão ${brl(PRECO_INICIAL_REF)} até ${ML_DA_BASE} ml + ${brl(PRECO_POR_ML_REF)} por ml adicional`
-    + ` (dá ${brl(preco(REF, 10))} em 10 ml e ${brl(preco(REF, 100))} em 100 ml). Os exemplos de referência do dono`
-    + ` (docs/11 §1.5.3) são 5 ml R$ 1,00 · 10 ml R$ 1,10 · 100 ml R$ 2,00 — não cabem numa reta só; a curva exata é decisão dele`;
+  const ROTULO_PRECO_REF = `padrão do dono: ${brl(PRECO_INICIAL_REF)} até ${ML_DA_BASE} ml + ${brl(PRECO_POR_ML_REF)} por ml adicional`
+    + ` (dá ${brl(preco(REF, 10))} em 10 ml e ${brl(preco(REF, 50))} em 50 ml) — o autor pode mudar`;
 
   /* A prévia da tabela 5..100 ml que o formulário mostra ANTES de publicar. `ml_max` (o lote da máquina de referência,
    * em ml) marca as linhas que ela NÃO imprime: o anúncio não vende volume impossível sem dizer. */
