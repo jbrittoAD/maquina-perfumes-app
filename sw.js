@@ -1,6 +1,6 @@
 // Service worker: guarda o app inteiro no aparelho (um cache por versão) e responde sempre do cache, para abrir sem internet.
 // As duas linhas abaixo são reescritas por exportar_pwa.py: a versão é o hash dos arquivos, e é ela que faz o navegador atualizar.
-const VERSAO = 'bf44c199f337';
+const VERSAO = '3a2cb75fdbf6';
 const ARQUIVOS = ["./", "index.html", "app.js", "motor.js", "especialista.js", "calibracao.js", "imprimir.js", "site.js", "dados.json", "biblioteca.json", "especialista.json", "catalogo.html", "escadas.html", "tela-esp.html", "manifest.webmanifest", "icone-192.png", "icone-512.png", "icone-maskable-512.png"];
 const CACHE = 'perfume-' + VERSAO;
 

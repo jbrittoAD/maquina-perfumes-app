@@ -253,7 +253,8 @@
   <b>Fila simulada:</b> materiais reais da paleta MVP64; canais, alvos e pesos são de demonstração. O nome
   sai cortado em 31 bytes, como o firmware guarda.<br>
   <b>No aparelho:</b> as fontes de fábrica do TFT_eSPI não têm acento — o firmware troca á→a, ç→c
-  (“Balança” aparece “Balanca”).
+  (“Endereço” aparece “Endereco”).<br>
+  <b>Sem balança:</b> a máquina não tem balança (D1 revisada, 03/10 — gotas contadas a laser); a tela não mostra peso.
 </p>
 
 <script>
@@ -268,7 +269,7 @@ const S = {
   estado: "idle",               // Servidor::estado(): idle|dosando|erro
   executando: false,            // Servidor::executando()
   ip: "192.168.0.42",
-  peso: 0.0,                    // balança: acumula, o frasco recebe a fórmula inteira
+  peso: 0.0,                    // só da simulação: a massa que "caiu", para o obtido da última dose (não aparece na tela)
   formula: { nome: "Ambre 51", atual: 0, total: 0 }, // atual = item_atual() = itens já concluídos
   fila: [],                     // [{nome, canal, alvo}] como o firmware guardou
   ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado}
@@ -385,7 +386,7 @@ function telaStatus() {
       <div class="bloco"><span class="rotulo">WiFi</span><span class="valor">${S.wifi.ssid}</span></div>
       <div class="bloco"><span class="rotulo">Endereço IP</span><span class="valor">${S.ip}</span></div>
       <div class="bloco"><span class="rotulo">Estado</span>${seloEstado(true)}</div>
-      <div class="bloco"><span class="rotulo">Balança</span><span class="valor">${g3(S.peso)}</span></div>
+      <div class="bloco"><span class="rotulo">Canais</span><span class="valor">20 (0 a 19)</span></div>
     </div>
     <div class="painel">${painelFila()}</div>
     <div class="rodape-linha">ligada há ${uptime()}<span class="det">tocar para voltar</span></div>`;
@@ -403,9 +404,9 @@ function telaDose() {
     <div class="meta">${dentro ? `<span class="rotulo">Fórmula</span><span class="corta forte">${f.nome}</span><span class="dir">item ${f.atual + 1} de ${f.total}</span>` : ""}</div>
     <div class="item-atual">${dentro
       ? `<div class="nome corta">${it.nome || `canal ${it.canal}`}</div>
-         <div class="dets"><span class="forte">canal ${it.canal}</span><span class="det forte">alvo ${g3(it.alvo)}</span><span class="det">balança ${g3(S.peso)}</span></div>`
+         <div class="dets"><span class="forte">canal ${it.canal}</span><span class="det forte">alvo ${g3(it.alvo)}</span></div>`
       : `<div class="nome corta${parouComErro ? " erro-txt" : ""}">${parouComErro ? "Fila parada com erro" : "Fila encerrada"}</div>
-         <div class="dets"><span class="fraco">balança ${g3(S.peso)}</span></div>`}
+         <div class="dets"><span class="fraco">${f.total ? (parouComErro ? `parou no item ${f.atual + 1} de ${f.total}` : `${feitos} de ${f.total} itens dosados`) : "nenhuma fórmula na fila"}</span></div>`}
     </div>
     ${mostraBarra ? `
     <div class="prog-rot"><span class="rotulo">Fila</span><span class="forte">${feitos} de ${f.total} concluídos</span><span class="pct">${Math.round(frac * 100)}%</span></div>
