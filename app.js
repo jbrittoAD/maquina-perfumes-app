@@ -513,16 +513,19 @@
 
     function linha(c) {
       const nome = el('div', { class: 'dica' }, c.material_id ? nomeDe(c.material_id) : 'escolha o material'), achados = el('div', { class: 'achados' });
+      const calib = el('div');                                    // o bloco de calibração acompanha o que muda no vidro
+      const mudaCalib = () => calib.replaceChildren(blocoCalibracao(c));
+      mudaCalib();
       const busca = el('input', { type: 'search', placeholder: 'Buscar material (nome ou CAS)', 'aria-label': 'Buscar material do vidro ' + c.canal });
       busca.oninput = async () => {
         const r = (await api('/api/materiais', { q: busca.value })).materiais;
         achados.replaceChildren(...r.map(m => el('button', { onclick: () => {
-          c.material_id = m.id; nome.textContent = m.nome; busca.value = ''; achados.replaceChildren(); agendar();
+          c.material_id = m.id; nome.textContent = m.nome; busca.value = ''; achados.replaceChildren(); mudaCalib(); agendar();
         } }, m.nome, ' ', el('small', {}, [m.cas, m.familia].filter(Boolean).join(' · ')))));
       };
       const numero = (valor, passo, cb, rotulo, vazio) => el('input', { type: 'number', min: 0, step: passo, value: valor === null ? '' : valor, 'aria-label': rotulo, placeholder: vazio || '',
-        onchange: ev => { cb(ev.target.value === '' ? null : Number(ev.target.value)); agendar(); } });
-      const dil = el('select', { 'aria-label': 'Diluição do vidro ' + c.canal, onchange: ev => { c.diluicao_pct = Number(ev.target.value); agendar(); } },
+        onchange: ev => { cb(ev.target.value === '' ? null : Number(ev.target.value)); mudaCalib(); agendar(); } });
+      const dil = el('select', { 'aria-label': 'Diluição do vidro ' + c.canal, onchange: ev => { c.diluicao_pct = Number(ev.target.value); mudaCalib(); agendar(); } },
         ...[...new Set([...DILUICOES, c.diluicao_pct])].sort((a, b) => b - a).map(d => el('option', { value: d, selected: d === c.diluicao_pct }, fmt(d) + '%')));
       return el('div', { class: 'vidro' },
         el('div', { class: 'linha' }, el('b', {}, 'Vidro nº'), numero(c.canal, 1, v => { c.canal = v; }, 'Número do vidro'),
@@ -531,7 +534,7 @@
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Diluição ', dil), el('label', { class: 'dica' }, 'Volume (ml) ',
           numero(c.volume_atual_ml, 'any', v => { c.volume_atual_ml = v; }, 'Volume do vidro em ml')),
         el('label', { class: 'dica' }, 'Densidade (g/ml, opcional) ', numero(c.densidade_g_ml, 'any', v => { c.densidade_g_ml = v; }, 'Densidade em g/ml', 'não sei'))),
-        blocoCalibracao(c),
+        calib,
         el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: () => telaCalibracao(j, c) }, 'Calibrar este vidro')));
     }
 
