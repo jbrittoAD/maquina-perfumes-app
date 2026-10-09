@@ -49,6 +49,7 @@
     ler() { try { return JSON.parse(localStorage.getItem(CHAVE_PROPRIA) || 'null'); } catch { return null; } },
     gravar(mapa) { if (mapa === null) localStorage.removeItem(CHAVE_PROPRIA); else localStorage.setItem(CHAVE_PROPRIA, JSON.stringify(mapa)); },
   };
+  const calibracao = Calibracao.criar(lembrar);               // fatores mg/passo e densidades medidas por canal (docs/11 §2)
 
   async function api(rota, corpo) {
     if (PESADAS.has(rota)) await new Promise(r => setTimeout(r, 30));
@@ -529,7 +530,9 @@
         nome, busca, achados,
         el('div', { class: 'linha' }, el('label', { class: 'dica' }, 'Diluição ', dil), el('label', { class: 'dica' }, 'Volume (ml) ',
           numero(c.volume_atual_ml, 'any', v => { c.volume_atual_ml = v; }, 'Volume do vidro em ml')),
-        el('label', { class: 'dica' }, 'Densidade (g/ml, opcional) ', numero(c.densidade_g_ml, 'any', v => { c.densidade_g_ml = v; }, 'Densidade em g/ml', 'não sei'))));
+        el('label', { class: 'dica' }, 'Densidade (g/ml, opcional) ', numero(c.densidade_g_ml, 'any', v => { c.densidade_g_ml = v; }, 'Densidade em g/ml', 'não sei'))),
+        blocoCalibracao(c),
+        el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: () => telaCalibracao(j, c) }, 'Calibrar este vidro')));
     }
 
     const modelo = el('select', { 'aria-label': 'Máquina para copiar' }, ...[...db.maquinas.keys()].filter(id => id !== 'minha').map(id => el('option', { value: id }, db.maquinas.get(id).nome)));
@@ -569,6 +572,117 @@
     painel, msg,
     el('div', { class: 'linha', style: 'margin-top:8px' }, salvarBt, j.registrada ? apagar : ''));
     conferir();
+  }
+
+  // ---------------------------------------------------------------------------------------------- calibrar o vidro (docs/11 §2)
+  /* O fluxo manual: pesar o vidro cheio na balança de 0,01 g, rodar N passos da bomba pelo painel da máquina e pesar de
+   * novo — 2–3 rodadas dão o fator mg/passo com desvio; a proveta (opcional) dá a densidade real. Grava em
+   * perfume.calibracao.v1 por canal, FORA do mapa; a densidade medida preenche o campo do canal pelo mesmo caminho do
+   * preenchimento manual, para o estoque virar conferível. Trocado o material do vidro: a calibração fica desatualizada. */
+  const pctPt = n => String(n).replace('.', ',');
+  const doseMinimaMg = () => Math.round((db.maquinas.get(Motor.ID_PROPRIA) || db.maquinas.get('mvp-64')).dose_minima_g * 1000);
+
+  function blocoCalibracao(c) {
+    const box = el('div', { class: 'dica' });
+    const ent = calibracao.do(Motor.ID_PROPRIA, c.canal);
+    if (!ent) { box.textContent = 'Sem calibração: o fator mg/passo deste vidro ainda não foi medido.'; return box; }
+    const mat = c.material_id ? db.materiais.get(c.material_id) : null;
+    if (!mat) { box.textContent = 'Calibração gravada para ' + ent.material.nome + ' — escolha o material deste vidro para conferir.'; return box; }
+    let conf;
+    try { conf = Calibracao.conferencias(ent, c, mat, doseMinimaMg()); }
+    catch { box.textContent = 'Calibração ilegível neste navegador — recalibre este vidro.'; return box; }
+    if (conf.desatualizada) { box.className = 'falta'; box.textContent = '⚠ ' + conf.avisos[0] + '.'; return box; }
+    const linhas = [el('div', { class: 'ok' }, '✔ Calibrado em ' + data(ent.data) + ': ' + g3(ent.fator_mg_passo) + ' mg/passo'
+      + (ent.desvio_mg_passo === null ? '' : ' ± ' + g3(ent.desvio_mg_passo)))];
+    const p = conf.passosDose;
+    linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' passos' + (p.margem === null ? '' : ' ± ' + p.margem)));
+    if (conf.usoTipico) linhas.push(el('div', {}, 'No menor uso típico do catálogo (' + pctPt(conf.usoTipico.faixa.min) + '–'
+      + pctPt(conf.usoTipico.faixa.max) + '%): ~' + Math.round(conf.usoTipico.dispensado_mg) + ' mg dispensados por lote de '
+      + Calibracao.CONCENTRADO_G + ' g'));
+    if (typeof conf.estoque_g === 'number') linhas.push(el('div', {}, 'Estoque conferível: restam ~' + fmt(conf.estoque_g) + ' g no vidro'));
+    conf.avisos.forEach(a => linhas.push(el('div', { class: 'falta' }, '⚠ ' + a + '.')));
+    box.replaceChildren(...linhas);
+    return box;
+  }
+
+  function telaCalibracao(j, c) {
+    const mat = c.material_id ? db.materiais.get(c.material_id) : null;
+    const voltar = el('button', { class: 'sec', onclick: () => desenharMapa(j) }, '← Voltar ao mapa');
+    if (!mat) {
+      $('#tela').replaceChildren(voltar, el('div', { class: 'card' }, el('h2', {}, 'Calibrar vidro'),
+        el('p', { class: 'falta' }, 'Escolha o material deste vidro no mapa antes de calibrar.')));
+      return;
+    }
+    const ja = calibracao.do(Motor.ID_PROPRIA, c.canal);
+    const rodadas = [], msg = el('div', { class: 'erro' }), lista = el('div');
+    const balanca = el('select', { 'aria-label': 'Resolução da balança', onchange: ajustaBalanca },
+      ...[0.01, 0.05, 0.1].map(v => el('option', { value: v, selected: v === 0.01 }, v.toLocaleString('pt-BR') + ' g')));
+    const mAntes = el('input', { type: 'number', min: 0, step: 0.01, 'aria-label': 'Massa do vidro cheio, em gramas', placeholder: 'ex. 85,20' });
+    const nPassos = el('input', { type: 'number', min: 1, step: 1, value: 1000, 'aria-label': 'Quantos passos da bomba vão rodar' });
+    const mDepois = el('input', { type: 'number', min: 0, step: 0.01, 'aria-label': 'Massa depois de rodar, em gramas', placeholder: 'ex. 84,20' });
+    const proveta = el('input', { type: 'number', min: 0, step: 'any', 'aria-label': 'Volume dispensado na proveta, em ml (opcional)', placeholder: 'opcional' });
+    function ajustaBalanca() { mAntes.step = balanca.value; mDepois.step = balanca.value; }
+    function registrar() {
+      msg.textContent = '';
+      try {
+        const volume = proveta.value === '' ? null : Number(proveta.value);
+        if (volume !== null && !(volume > 0)) throw new Calibracao.ErroDeUso('o volume na proveta tem de ser maior que zero');
+        const f = Calibracao.fatorDaRodada(Number(mAntes.value), Number(mDepois.value), Number(nPassos.value));
+        rodadas.push({ antes_g: Number(mAntes.value), depois_g: Number(mDepois.value), passos: Number(nPassos.value), volume_ml: volume,
+          mg: f.mg, mg_por_passo: f.mg_por_passo });
+        desenharRodadas();
+      } catch (e) { msg.textContent = e.message; }
+    }
+    const salvarBt = el('button', { disabled: true, onclick: salvar }, 'Salvar calibração');
+    function desenharRodadas() {
+      const linhas = rodadas.map((r, i) => el('div', {}, 'Rodada ' + (i + 1) + ': ' + g3(r.mg / 1000) + ' g em ' + r.passos + ' passos = '
+        + g3(r.mg_por_passo) + ' mg/passo' + (r.volume_ml ? ' · proveta ' + r.volume_ml + ' ml → ' + g3(r.mg / 1000 / r.volume_ml) + ' g/ml' : '')));
+      if (rodadas.length) {
+        const { media, desvio } = Calibracao.mediaDesvio(rodadas.map(r => r.mg_por_passo));
+        const p = Calibracao.passosDaDose(doseMinimaMg(), media, desvio);
+        linhas.push(el('div', { class: 'ok' }, 'Média ' + g3(media) + ' mg/passo' + (desvio === null ? ' (uma rodada: ainda sem desvio)' : ' ± ' + g3(desvio))));
+        linhas.push(el('div', {}, doseMinimaMg() + ' mg = ' + p.passos + ' passos' + (p.margem === null ? '' : ' ± ' + p.margem)));
+        linhas.push(el('div', { class: 'dica' }, 'SUGESTÃO de passos para a próxima rodada (~1 g): ' + Math.round(1000 / media)
+          + ' — chute de partida, ajuste como preferir.'));
+      }
+      lista.replaceChildren(...linhas);
+      salvarBt.disabled = !rodadas.length;
+    }
+    function salvar() {
+      msg.textContent = '';
+      try {
+        const { media, desvio } = Calibracao.mediaDesvio(rodadas.map(r => r.mg_por_passo));
+        const dens = Calibracao.densidadeDasRodadas(rodadas);
+        calibracao.salvar({ maquina: Motor.ID_PROPRIA, canal: c.canal, diluicao_pct: c.diluicao_pct,
+          material: { id: mat.id, nome: mat.nome, cas: mat.cas }, rodadas,
+          fator_mg_passo: media, desvio_mg_passo: desvio, densidade_g_ml: dens, data: new Date().toISOString() });
+        if (dens !== null) c.densidade_g_ml = dens;          // mesmo caminho do preenchimento manual: o validador do mapa passa a conferir o estoque
+        aviso('Calibração salva para o vidro nº' + c.canal + (dens === null ? '' : ' (densidade ' + g3(dens) + ' g/ml anotada no canal)'), 6000);
+        desenharMapa(j);
+      } catch (e) { msg.textContent = e.message; }
+    }
+    let certeza = false;
+    const apagarBt = el('button', { class: 'sec', onclick: () => {
+      if (!certeza) { certeza = true; apagarBt.textContent = 'Toque de novo para apagar'; apagarBt.classList.add('ruim'); return; }
+      calibracao.limpar(Motor.ID_PROPRIA, c.canal);
+      aviso('Calibração do vidro nº' + c.canal + ' apagada.', 4000);
+      desenharMapa(j);
+    } }, 'Apagar calibração');
+    $('#tela').replaceChildren(voltar,
+      el('div', { class: 'card' }, el('h2', {}, 'Calibrar vidro nº' + c.canal + ' — ' + mat.nome + ' (' + fmt(c.diluicao_pct) + '%)'),
+        el('p', { class: 'dica' }, 'Padrões assumidos (docs/11 §2): balança de resolução ', balanca,
+          ' · dose por massa (a proveta é opcional) · calibração por canal, feita na montagem e conferida na troca de vidro.'),
+        ja ? el('p', { class: 'dica' }, 'Já existe calibração: ' + g3(ja.fator_mg_passo) + ' mg/passo'
+          + (ja.desvio_mg_passo === null ? '' : ' ± ' + g3(ja.desvio_mg_passo)) + ' (' + data(ja.data) + '). Salvar por cima substitui.') : '',
+        el('div', { class: 'vidro' },
+          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '1. Vidro cheio ', mAntes, ' g')),
+          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '2. Rodar ', nPassos, ' passos da bomba pelo painel da máquina')),
+          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '3. Pesar de novo ', mDepois, ' g')),
+          el('div', { class: 'linha' }, el('label', { class: 'dica' }, '(opcional) Proveta ', proveta, ' ml')),
+          el('div', { class: 'linha' }, el('button', { onclick: registrar }, 'Registrar rodada'))),
+        msg, lista,
+        el('p', { class: 'dica' }, 'Faça 2–3 rodadas: o desvio entre elas é o que aparece depois do ±. Os 1000 passos do campo são um chute de partida (algo entre 0,5 e 2 g na maioria dos vidros).'),
+        el('div', { class: 'linha' }, salvarBt, ja ? apagarBt : '')));
   }
 
   // ---------------------------------------------------------------------------------------------- nariz digital (o especialista)
