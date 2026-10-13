@@ -128,7 +128,7 @@
 
   /* ---- menu principal: botões ocupam a altura; selo + IP no rodapé ---- */
   .corpo.menu { gap: 12px; }
-  .corpo.menu .grade-botoes { flex: 1; grid-template-rows: 1fr 1fr; margin-top: 0; }
+  .corpo.menu .grade-botoes { flex: 1; grid-template-rows: repeat(3, 1fr); margin-top: 0; }
   .corpo.menu .botao-grande { height: auto; font-size: 22px; font-weight: 600; }
   .rodape-estado { display: flex; align-items: center; justify-content: center; gap: 12px; height: 28px; flex: none;
                    color: var(--fraco); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -212,6 +212,27 @@
   }
   .visor-teclado span:last-child { color: var(--fraco); font-weight: 500; font-size: 11px; }
 
+  /* testes de bancada: fim de curso ao vivo + jog manual (firmware M_TESTES) */
+  .ts-eixos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; flex: none; }
+  .ts-eixo { background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px;
+             height: 66px; padding: 8px 12px; cursor: pointer; position: relative; }
+  .ts-eixo.sel { border-color: var(--destaque); }
+  .ts-eixo .rot { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--fraco); }
+  .ts-eixo .cnt { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .ts-eixo .fc { position: absolute; top: 12px; right: 12px; width: 10px; height: 10px;
+                 border-radius: 50%; background: var(--ok); }
+  .ts-eixo .fc.on { background: var(--erro); }
+  .ts-linha { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex: none; }
+  .ts-linha .rotulo { margin-right: 2px; }
+  .ts-opt { background: var(--cartao); border: 1px solid var(--borda); border-radius: 8px; height: 40px;
+            min-width: 58px; display: flex; align-items: center; justify-content: center;
+            font-size: 14px; font-weight: 600; cursor: pointer; }
+  .ts-opt.sel { background: var(--destaque); border-color: var(--destaque); color: #fff; }
+  .ts-jog { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; flex: none; }
+  .ts-jog .acao { height: 64px; font-size: 28px; }
+  .ts-mm { margin-top: 10px; text-align: center; color: var(--fraco); font-size: 12px;
+           font-variant-numeric: tabular-nums; flex: none; }
+
   /* controles da página (fora da telinha) */
   .controles { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
   .controles button {
@@ -243,6 +264,9 @@
   <button onclick="simularDose()">▶ Simular dosagem</button>
   <button onclick="gerarAviso()">⚠ Simular aviso</button>
   <button onclick="simularErro()">✖ Simular fila parada com erro</button>
+  <button onclick="tsFim(0)">⊙ Fim de curso X</button>
+  <button onclick="tsFim(1)">⊙ Fim de curso Y</button>
+  <button onclick="tsFim(2)">⊙ Fim de curso Z</button>
   <button onclick="trocarTema()">◐ Tema claro/escuro</button>
 </div>
 <p class="nota">
@@ -276,6 +300,7 @@ const S = {
   ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado, gotas, solvente}
   doseAnim: null,
   avisos: [],                   // {texto, quando, tipo}
+  testes: { eixo: 0, passo: 1, cont: [0, 0, 0], fc: [false, false, false] }, // tela de bancada
   boot: Date.now() - 3723e3,
 };
 // Fila SIMULADA: materiais reais da paleta MVP64 (dados/seed/paleta_mvp64.json)
@@ -358,6 +383,7 @@ function telaPrincipal() {
       <div class="botao-grande" onclick="ir('vinculo')">Vínculo</div>
       <div class="botao-grande" onclick="ir('avisos')">Avisos</div>
       <div class="botao-grande" onclick="ir('config')">Config</div>
+      <div class="botao-grande" onclick="ir('testes')">Testes</div>
     </div>
     <div class="rodape-estado">${seloEstado(false)}<span>${S.ip}</span></div>`;
 }
@@ -489,10 +515,49 @@ function telaTeclado() {
     </div>`;
 }
 
+// ------------------------------------------------- testes de bancada (M_TESTES) ---
+// Fim de curso ao vivo (X=GPIO36, Y=35, Z=34 — o header que depois vira o
+// sensor de gotas) + jog manual dos 3 steppers. Mesmo comportamento do
+// firmware: jog para se encostar no fim de curso do lado do homing (dir −),
+// trava se houver fórmula em curso, mm pela estimativa de 400 passos/mm.
+const TS_PASSOS = [10, 100, 1000];
+function telaTestes() {
+  $("titulo").textContent = "Testes de bancada";
+  $("tituloDir").textContent = "";
+  const T = S.testes, travado = S.executando;
+  const eixo = (i, nome) => `
+    <div class="ts-eixo${T.eixo === i ? " sel" : ""}" onclick="tsSelEixo(${i})">
+      <span class="rot">${nome}</span><span class="fc${T.fc[i] ? " on" : ""}"></span>
+      <div class="cnt">${T.cont[i]}</div>
+    </div>`;
+  const opt = (i) => `
+    <div class="ts-opt${T.passo === i ? " sel" : ""}" onclick="tsSelPasso(${i})">${TS_PASSOS[i]}</div>`;
+  const mm = (i) => i < 2 ? `${(T.cont[i] / 400).toFixed(1)} mm` : `${T.cont[i]} passos`;
+  $("corpo").innerHTML = `
+    <div class="ts-eixos">${eixo(0, "X")}${eixo(1, "Y")}${eixo(2, "Z (gota)")}</div>
+    <div class="ts-linha"><span class="rotulo">PASSO</span>${opt(0)}${opt(1)}${opt(2)}</div>
+    <div class="ts-jog">
+      <div class="acao primaria" style="${travado ? "filter:grayscale(1);pointer-events:none" : ""}" onclick="tsJog(-1)">−</div>
+      <div class="acao primaria" style="${travado ? "filter:grayscale(1);pointer-events:none" : ""}" onclick="tsJog(1)">+</div>
+    </div>
+    <div class="ts-mm">X ${mm(0)} · Y ${mm(1)} · Z ${mm(2)}</div>
+    <div class="rodape">${travado ? "dosando: jog travado" : "jog para no fim de curso · homing antes de dosar"}</div>`;
+}
+function tsSelEixo(i) { S.testes.eixo = i; telaTestes(); }
+function tsSelPasso(i) { S.testes.passo = i; telaTestes(); }
+function tsJog(dir) {
+  const T = S.testes;
+  if (S.executando) return;             // fórmula em curso: travado
+  if (dir < 0 && T.fc[T.eixo]) return;  // encostou no fim de curso do lado do homing
+  T.cont[T.eixo] += dir * TS_PASSOS[T.passo];
+  telaTestes();
+}
+function tsFim(i) { S.testes.fc[i] = !S.testes.fc[i]; if (S.menu === "testes") telaTestes(); }
+
 // -------------------------------------------------------------- navegação ---
 const TELAS = { principal: telaPrincipal, status: telaStatus, dose: telaDose,
                 vinculo: telaVinculo, avisos: telaAvisos, config: telaConfig,
-                teclado: telaTeclado };
+                teclado: telaTeclado, testes: telaTestes };
 function ir(menu) {
   S.menu = menu;
   $("corpo").className = "corpo";
@@ -578,11 +643,11 @@ addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape" && !["principal", "dose"].includes(S.menu)) ir("principal");
 });
-// toque como no firmware: Status, Vínculo, Avisos e Dosagem voltam ao menu com
-// qualquer toque; na Config, a barra de título ("‹ voltar") volta.
+// toque como no firmware: Status, Vínculo, Avisos, Dosagem e Testes voltam ao
+// menu com qualquer toque fora de botão; na Config, a barra ("‹ voltar") volta.
 $("corpo").addEventListener("click", (e) => {
   if (e.target.closest("[onclick]")) return;
-  if (["status", "vinculo", "avisos", "dose"].includes(S.menu)) ir("principal");
+  if (["status", "vinculo", "avisos", "dose", "testes"].includes(S.menu)) ir("principal");
 });
 document.querySelector(".barra-topo").addEventListener("click", () => { if (S.menu === "config") ir("principal"); });
 
