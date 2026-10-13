@@ -212,13 +212,19 @@
   }
   .visor-teclado span:last-child { color: var(--fraco); font-weight: 500; font-size: 11px; }
 
-  /* testes de bancada: fim de curso ao vivo + jog manual (firmware M_TESTES) */
-  .ts-eixos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; flex: none; }
+  /* testes de bancada: fim de curso ao vivo + jog manual + sensor de gotas (M_TESTES) */
+  .ts-eixos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; flex: none; }
   .ts-eixo { background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px;
              height: 66px; padding: 8px 12px; cursor: pointer; position: relative; }
   .ts-eixo.sel { border-color: var(--destaque); }
   .ts-eixo .rot { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--fraco); }
   .ts-eixo .cnt { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .ts-eixo .estado { font-size: 14px; font-weight: 700; margin-top: 9px; }
+  .ts-eixo .estado.livre { color: var(--ok); }
+  .ts-eixo .estado.cortada { color: var(--erro); }
+  .ts-eixo.gota .estado { font-size: 12px; margin-top: 4px; }
+  .ts-eixo.gota .cnt { margin-top: 1px; }
+  .ts-eixo.gota .rot { cursor: pointer; }
   .ts-eixo .fc { position: absolute; top: 12px; right: 12px; width: 10px; height: 10px;
                  border-radius: 50%; background: var(--ok); }
   .ts-eixo .fc.on { background: var(--erro); }
@@ -228,8 +234,11 @@
             min-width: 58px; display: flex; align-items: center; justify-content: center;
             font-size: 14px; font-weight: 600; cursor: pointer; }
   .ts-opt.sel { background: var(--destaque); border-color: var(--destaque); color: #fff; }
-  .ts-jog { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; flex: none; }
+  .ts-jog { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 12px; margin-top: 12px; flex: none; }
   .ts-jog .acao { height: 64px; font-size: 28px; }
+  .ts-jog .acao.testar { background: var(--ok); border-color: var(--ok); font-size: 15px; font-weight: 700;
+                         display: flex; flex-direction: column; gap: 2px; }
+  .ts-jog .acao.testar small { font-size: 12px; font-weight: 600; opacity: .85; }
   .ts-mm { margin-top: 10px; text-align: center; color: var(--fraco); font-size: 12px;
            font-variant-numeric: tabular-nums; flex: none; }
 
@@ -267,6 +276,8 @@
   <button onclick="tsFim(0)">⊙ Fim de curso X</button>
   <button onclick="tsFim(1)">⊙ Fim de curso Y</button>
   <button onclick="tsFim(2)">⊙ Fim de curso Z</button>
+  <button onclick="tsFim(3)">⊙ Gota (PROBE)</button>
+  <button onclick="tsPulso(2)">＋ 2 pulsos de gota</button>
   <button onclick="trocarTema()">◐ Tema claro/escuro</button>
 </div>
 <p class="nota">
@@ -279,7 +290,10 @@
   <b>No aparelho:</b> as fontes de fábrica do TFT_eSPI não têm acento — o firmware troca á→a, ç→c
   (“Endereço” aparece “Endereco”).<br>
   <b>Sem balança:</b> a máquina não tem balança (D1 revisada, 03/10) — dosagem por CONTAGEM DE GOTAS na
-  barreira óptica do carro. O solvente (etanol) não goteja: fio contínuo dosado por passos calibrados.
+  barreira óptica do carro. O solvente (etanol) não goteja: fio contínuo dosado por passos calibrados.<br>
+  <b>Tic:</b> todo toque na telinha responde com um tique curto (buzzer do EXP1 — mesmo experimento de
+  bancada que decide se EN/BEEP do 74HC595 estão onde o firmware pensa) — <i>exceto durante a dosagem</i>:
+  nesse momento o buzzer pertence à tarefa da fórmula e o aparelho fica mudo de propósito.
 </p>
 
 <script>
@@ -300,7 +314,7 @@ const S = {
   ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado, gotas, solvente}
   doseAnim: null,
   avisos: [],                   // {texto, quando, tipo}
-  testes: { eixo: 0, passo: 1, cont: [0, 0, 0], fc: [false, false, false] }, // tela de bancada
+  testes: { eixo: 0, passo: 1, cont: [0, 0, 0], fc: [false, false, false, false], pulsos: 0 }, // tela de bancada
   boot: Date.now() - 3723e3,
 };
 // Fila SIMULADA: materiais reais da paleta MVP64 (dados/seed/paleta_mvp64.json)
@@ -516,11 +530,21 @@ function telaTeclado() {
 }
 
 // ------------------------------------------------- testes de bancada (M_TESTES) ---
-// Fim de curso ao vivo (X=GPIO36, Y=35, Z=34 — o header que depois vira o
-// sensor de gotas) + jog manual dos 3 steppers. Mesmo comportamento do
-// firmware: jog para se encostar no fim de curso do lado do homing (dir −),
-// trava se houver fórmula em curso, mm pela estimativa de 400 passos/mm.
+// Fim de curso ao vivo (X=GPIO36, Y=35, Z=34) + jog manual dos 3 steppers +
+// o cartão GOTA (GPIO22, header PROBE — módulo LM393 do sensor de gotas).
+// Mesmo comportamento do firmware: jog para se encostar no fim de curso do
+// lado do homing (dir −), trava se houver fórmula em curso, mm pela
+// calibração da bancada 13/10 (1600 passos/mm — igual config.h).
 const TS_PASSOS = [10, 100, 1000];
+// %.2f do firmware (C) arredonda empate para o PAR (1000/1600 = 0,625 → "0.62");
+// toFixed do JS vai para o MAIOR ("0.63"). Paridade com o display do ESP32.
+function mmFmt(passos) {
+  const cent = passos / 16;                   // centésimos de mm (1600 passos/mm)
+  const baixo = Math.floor(cent), meio = cent - baixo;
+  let n = baixo;
+  if (meio > 0.5 || (meio === 0.5 && (baixo & 1))) n = baixo + 1;
+  return (n / 100).toFixed(2);
+}
 function telaTestes() {
   $("titulo").textContent = "Testes de bancada";
   $("tituloDir").textContent = "";
@@ -530,18 +554,26 @@ function telaTestes() {
       <span class="rot">${nome}</span><span class="fc${T.fc[i] ? " on" : ""}"></span>
       <div class="cnt">${T.cont[i]}</div>
     </div>`;
+  const gota = `
+    <div class="ts-eixo gota" onclick="tsZeroPulsos()">
+      <span class="rot">GOTA</span><span class="fc${T.fc[3] ? " on" : ""}"></span>
+      <div class="estado ${T.fc[3] ? "cortada" : "livre"}">${T.fc[3] ? "cortada" : "livre"}</div>
+      <div class="cnt">${T.pulsos}</div>
+    </div>`;
   const opt = (i) => `
     <div class="ts-opt${T.passo === i ? " sel" : ""}" onclick="tsSelPasso(${i})">${TS_PASSOS[i]}</div>`;
-  const mm = (i) => i < 2 ? `${(T.cont[i] / 400).toFixed(1)} mm` : `${T.cont[i]} passos`;
+  // 1600 passos/mm: medido na bancada 13/10 (1000 passos ≈ 0,5–0,6 mm) — igual config.h
+  const mm = (i) => i < 2 ? `${mmFmt(T.cont[i])} mm` : `${T.cont[i]} passos`;
   $("corpo").innerHTML = `
-    <div class="ts-eixos">${eixo(0, "X")}${eixo(1, "Y")}${eixo(2, "Z (gota)")}</div>
+    <div class="ts-eixos">${eixo(0, "X")}${eixo(1, "Y")}${eixo(2, "Z")}${gota}</div>
     <div class="ts-linha"><span class="rotulo">PASSO</span>${opt(0)}${opt(1)}${opt(2)}</div>
     <div class="ts-jog">
       <div class="acao primaria" style="${travado ? "filter:grayscale(1);pointer-events:none" : ""}" onclick="tsJog(-1)">−</div>
+      <div class="acao testar" style="${travado ? "filter:grayscale(1);pointer-events:none" : ""}" onclick="tsTestar()">TESTAR<small>50+50</small></div>
       <div class="acao primaria" style="${travado ? "filter:grayscale(1);pointer-events:none" : ""}" onclick="tsJog(1)">+</div>
     </div>
     <div class="ts-mm">X ${mm(0)} · Y ${mm(1)} · Z ${mm(2)}</div>
-    <div class="rodape">${travado ? "dosando: jog travado" : "jog para no fim de curso · homing antes de dosar"}</div>`;
+    <div class="rodape">${travado ? "dosando: jog travado" : "TESTAR: 50 ida + volta · tocar no GOTA zera pulsos"}</div>`;
 }
 function tsSelEixo(i) { S.testes.eixo = i; telaTestes(); }
 function tsSelPasso(i) { S.testes.passo = i; telaTestes(); }
@@ -553,6 +585,19 @@ function tsJog(dir) {
   telaTestes();
 }
 function tsFim(i) { S.testes.fc[i] = !S.testes.fc[i]; if (S.menu === "testes") telaTestes(); }
+function tsZeroPulsos() { S.testes.pulsos = 0; if (S.menu === "testes") telaTestes(); }
+function tsPulso(n = 1) { S.testes.pulsos += n; if (S.menu === "testes") telaTestes(); }
+// TESTAR: 50 passos ida, pausa, 50 volta (mesmos guardas do jog — travado
+// durante fórmula; a volta para no fim de curso do lado do homing)
+async function tsTestar() {
+  const T = S.testes;
+  if (S.executando) return;
+  if (T.fc[T.eixo]) return;
+  T.cont[T.eixo] += 50; telaTestes();
+  await atraso(260);
+  if (T.fc[T.eixo]) { telaTestes(); return; }
+  T.cont[T.eixo] -= 50; telaTestes();
+}
 
 // -------------------------------------------------------------- navegação ---
 const TELAS = { principal: telaPrincipal, status: telaStatus, dose: telaDose,
@@ -635,13 +680,35 @@ function gerarAviso() {
   if (S.menu === "avisos") telaAvisos();
 }
 
-// atalhos de teclado (como se fosse toque)
+// tic de clique (pedido 13/10): no aparelho é o buzzer do EXP1 pulsado pelo
+// 74HC595 (~2 kHz/30 ms — i2s_steppers::beep_tic); aqui, WebAudio no mesmo
+// tom. O AudioContext só nasce DENTRO do gesto (pointerdown) por causa da
+// política de autoplay; volume baixo — é um tique, não um beep.
+let ticCtx = null;
+function tic() {
+  if (S.executando) return; // no aparelho o 595 é da dosagem: silêncio até acabar
+  try {
+    ticCtx = ticCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (ticCtx.state === "suspended") ticCtx.resume();
+    const o = ticCtx.createOscillator(), g = ticCtx.createGain();
+    o.type = "square";
+    o.frequency.value = 2000;
+    g.gain.value = 0.04;
+    o.connect(g).connect(ticCtx.destination);
+    o.start();
+    o.stop(ticCtx.currentTime + 0.03);
+  } catch (e) { /* sem áudio: o restante do clique segue normal */ }
+}
+$("tela").addEventListener("pointerdown", tic); // TODO toque responde, como no firmware
+
+// atalhos de teclado (como se fosse toque — ticsam igual, keydown também é
+// gesto de usuário válido para o AudioContext)
 addEventListener("keydown", (e) => {
   if (S.menu === "teclado") {
-    if (e.key === "Backspace") return apagar();
-    if (e.key.length === 1) return digitar(e.key);
+    if (e.key === "Backspace") { tic(); return apagar(); }
+    if (e.key.length === 1) { tic(); return digitar(e.key); }
   }
-  if (e.key === "Escape" && !["principal", "dose"].includes(S.menu)) ir("principal");
+  if (e.key === "Escape" && !["principal", "dose"].includes(S.menu)) { tic(); ir("principal"); }
 });
 // toque como no firmware: Status, Vínculo, Avisos, Dosagem e Testes voltam ao
 // menu com qualquer toque fora de botão; na Config, a barra ("‹ voltar") volta.
