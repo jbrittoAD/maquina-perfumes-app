@@ -102,6 +102,9 @@
       this.glossario = new Map(Object.entries(d.glossario));
       this.familias_pt = d.familias_pt;
       this.regras_quimicas = d.regras_quimicas;
+      this.estruturas = d.estruturas || [];    // MOTOR-2: seeds exportados pelo exportar_pwa.py (dados.json antigo: vazios)
+      this.sensacoes = d.sensacoes || [];
+      this.contraste = d.contraste || null;
       this.biblioteca = null;                 // os 9.180 do catálogo: entra por definir_biblioteca (fetch lazy, como o especialista.json)
     }
 
@@ -387,6 +390,9 @@
   const FOLGA_IFRA = 0.90;
   const VOLTAS_DA_CORRECAO = 6;                                    // trava: em 1.240 composições medidas bastaram 2 voltas (tetos, tirar dose mínima, tetos de novo)
   const COBERTURA_MIN = 0.80;
+  const PESO_ESTRUTURA = 0.70;                               // MOTOR-2: com estrutura, a camada de base vira a ESTRUTURA a 70% do
+  // concentrado — vídeo PerfumoLogos "BASES UNIVERSAIS" (11/10/2026): perfume comercial = ESTRUTURA de 6–10 matérias-
+  // primas (~80% da fórmula) que dá fixação/projeção/difusão; método ~70% estrutura + ~30% notas por cima.
   const AJUSTES = {
     mais_fresco: { citrus: 0.25, aquatic: 0.10, green: 0.10 },
     menos_fresco: { citrus: -0.25, aquatic: -0.10, green: -0.10 },
@@ -400,8 +406,10 @@
 
   class Brief {
     constructor({ familias = {}, notas = [], evitar_notas = [], evitar_materiais = [], concentracao_pct = 15.0, massa_final_g = 26.5, preferir_acordes = [],
-      peso_base = null, base_familias = {}, evitar_familias = [], biblioteca = false } = {}) {
-      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes, peso_base, base_familias, evitar_familias, biblioteca });
+      peso_base = null, base_familias = {}, evitar_familias = [], biblioteca = false,
+      sensacao = null, estrutura_id = null, contraste = false } = {}) {
+      Object.assign(this, { familias, notas, evitar_notas, evitar_materiais, concentracao_pct, massa_final_g, preferir_acordes, peso_base, base_familias, evitar_familias, biblioteca,
+        sensacao, estrutura_id, contraste });
     }
     pesos() {
       const positivos = Object.entries(this.familias).filter(([, v]) => v > 0);
@@ -419,7 +427,7 @@
   class Candidato {
     constructor({ nome, protagonista_id, itens, massa_final_g, avisos = [], pontuacao = 0.0 }) {
       Object.assign(this, { nome, protagonista_id, itens, massa_final_g, avisos, pontuacao,
-        explicacao: [], trocas: [], escolhas_pendentes: [], traducao: null, resultado: null, biblio: null });
+        explicacao: [], trocas: [], escolhas_pendentes: [], traducao: null, resultado: null, biblio: null, estrutura: null });   // estrutura: {"id","nome"} da base a 70% (MOTOR-2)
     }
     get valido() { return this.resultado !== null && this.resultado.ok && this.traducao !== null && this.traducao.completa; }
   }
@@ -749,6 +757,46 @@
     return out;
   }
 
+  // ---- MOTOR-2: ESTRUTURA (base universal a 70%) e CONTRASTE do apoio; os seeds vêm no Banco (dados.json antigo: listas vazias)
+  function _estrutura_ok(est, inv, proibidos, evitadas) {
+    // A estrutura precisa inteira na máquina pedida, fora dos proibidos, e sem família que o pedido afastou
+    // (mesma regra dos acordes de ensino, decisão do dono 08/10: bloco de fonte não se troca por dentro).
+    for (const [m] of est.partes) if (!inv.has(m) || proibidos.has(m)) return false;
+    for (const f of Object.keys(est.perfil_familias)) if (f !== '?' && evitadas.has(f)) return false;
+    return true;
+  }
+
+  function _escolher_estrutura(db, brief, inv, proibidos, evitadas) {
+    // [estrutura, aviso]: estrutura_id direto tem prioridade; senão a sensação anda no ranking pré-computado até a
+    // primeira que passa nos filtros da máquina. Sem os dois campos, [null, null] — o motor faz exatamente o que fazia.
+    if (brief.estrutura_id === null && brief.sensacao === null) return [null, null];
+    const ests = db.estruturas;
+    if (brief.estrutura_id !== null) {
+      const est = ests.find(e => e.id === brief.estrutura_id) || null;
+      if (est === null) return [null, `estrutura '${brief.estrutura_id}' desconhecida: compus sem ela`];
+      if (!_estrutura_ok(est, inv, proibidos, evitadas))
+        return [null, `a estrutura '${est.nome}' não cabe neste pedido (material fora da máquina ou família afastada): compus sem ela`];
+      return [est, null];
+    }
+    const s = db.sensacoes.find(x => x.id === brief.sensacao) || null;
+    if (s === null) return [null, `sensação '${brief.sensacao}' desconhecida: compus sem estrutura`];
+    const por_id = new Map(ests.map(e => [e.id, e]));
+    for (const [eid] of s.ranking) {
+      const est = por_id.get(eid) || null;
+      if (est !== null && _estrutura_ok(est, inv, proibidos, evitadas)) return [est, null];
+    }
+    return [null, 'nenhuma estrutura desta sensação cabe nesta máquina: compus como sempre'];
+  }
+
+  function _nota_contraste(db, acorde) {
+    // Índice da nota Fragrantica do material DOMINANTE do acorde (maior fração; empate: menor material_id), ou null.
+    if (!acorde.materiais.size) return null;
+    let dom = null, dom_f = 0.0;
+    for (const [m, f] of acorde.materiais) if (dom === null || f > dom_f || (f === dom_f && m < dom)) { dom = m; dom_f = f; }
+    const i = db.contraste === null ? undefined : db.contraste.material_nota[String(dom)];
+    return i === undefined ? null : i;
+  }
+
   function compor(db, maquina_id, brief, n = 3) {
     const inv = inventario(db, maquina_id);
     const proibidos = _proibidos(db, brief);
@@ -766,6 +814,9 @@
     acordes.sort((a, b) => (b.pontuacao - a.pontuacao) || (a.id - b.id));
     if (!sem_pedido || brief.notas.length) acordes = acordes.filter(a => a.pontuacao >= PONTUACAO_MIN);   // com pedido, só entra acorde que combina com ele
     const solvente_id = _solvente(db, maquina_id);
+    const [estrutura, aviso_estrutura] = _escolher_estrutura(db, brief, inv, proibidos, evitadas);
+    const brief_m = estrutura ? new Brief({ ...brief, peso_base: PESO_ESTRUTURA }) : brief;   // MOTOR-2: a base vira a ESTRUTURA a 70%
+    const base_est = estrutura ? estrutura.partes.map(([m, p]) => [m, p / 100.0]) : null;
     const usados = new Set(), saida = [];
     for (let k = 0; k < n; k++) {
       const livres = acordes.filter(a => !usados.has(a.id));
@@ -773,15 +824,19 @@
       const prot = livres.find(a => a.tier === 'A' && ja_usados.every(c => _jaccard(a, c) < 0.8)) || null;
       if (prot === null && (k > 0 || sem_pedido)) break;
       if (prot === null) {                                  // nenhum acorde combina: compõe por famílias
-        const base = _camada_base(db, inv, proibidos, k, brief.familias_da_base());
+        const base = base_est || _camada_base(db, inv, proibidos, k, brief.familias_da_base());
         const [nd, sem_nota] = _notas_diretas(db, inv, proibidos, brief.notas, new Set());
-        const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief, null, null, base, pesos, inv, proibidos, k, solvente_id, nd);
+        const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief_m, null, null, base, pesos, inv, proibidos, k, solvente_id, nd);
         for (const nota of sem_nota) avisos.push(`a nota '${nota}' que você pediu não tem como ser feita nesta máquina`);
         const nome = 'Composição por famílias: ' + Object.keys(pesos).sort((a, b) => pesos[b] - pesos[a]).slice(0, 3).join(' + ');
         const c = new Candidato({ nome, protagonista_id: 0, itens, massa_final_g: brief.massa_final_g, avisos });
         c.explicacao = ['Nenhum acorde do dicionário combina com o pedido nesta máquina; montado por famílias',
           'Famílias: ' + preench.map(([m]) => db.nome(m)).join(', ')];
-        if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
+        if (estrutura) {
+          c.estrutura = { id: estrutura.id, nome: estrutura.nome };
+          c.explicacao.push(`Estrutura: ${estrutura.nome} (base de fixação, ~70%) — hipótese até cheirar`);
+        } else if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
+        if (aviso_estrutura) c.avisos.unshift(aviso_estrutura);
         c.traducao = traducao; c.resultado = resultado;
         saida.push(c);
         continue;
@@ -798,14 +853,38 @@
       } else {
         apoios = outros;
       }
-      const apoio = apoios.length ? apoios[0] : null;
+      let aviso_contraste = null, apoio, escore_c = null;
+      if (brief.contraste && apoios.length) {              // MOTOR-2: o apoio sai de família complementar (maior escore da matriz)
+        const ip = _nota_contraste(db, prot);
+        if (ip === null) {
+          aviso_contraste = 'sem nota Fragrantica para o protagonista desta máquina: compus o apoio em harmonia';
+          apoio = apoios.length ? apoios[0] : null;
+        } else {
+          const matriz = db.contraste.matriz;
+          const pares_c = [];
+          for (const a of apoios) {
+            const ia = _nota_contraste(db, a);
+            if (ia !== null && matriz[ip][ia] > 0) pares_c.push([matriz[ip][ia], a]);
+          }
+          if (pares_c.length) {
+            pares_c.sort((x, y) => y[0] - x[0] || x[1].id - y[1].id);
+            [escore_c, apoio] = pares_c[0];
+          } else {
+            apoio = apoios.length ? apoios[0] : null;
+            aviso_contraste = 'sem par de contraste possível nesta máquina: compus o apoio em harmonia';
+            escore_c = null;
+          }
+        }
+      } else {
+        apoio = apoios.length ? apoios[0] : null;
+      }
       const deficit = _deficit(pesos, ...[prot, apoio].filter(Boolean));
-      const base = _camada_base(db, inv, proibidos, k, brief.familias_da_base());
+      const base = base_est || _camada_base(db, inv, proibidos, k, brief.familias_da_base());
       usados.add(prot.id);
       if (apoio) usados.add(apoio.id);
       const cobertas = new Set([prot, apoio].filter(a => a && a.nota).map(a => a.nota));
       const [nd, sem_nota] = _notas_diretas(db, inv, proibidos, brief.notas, cobertas);
-      const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief, prot, apoio, base,
+      const [preench, itens, avisos, traducao, resultado] = _montar_abrindo_familias(db, maquina_id, brief_m, prot, apoio, base,
         soma(Object.values(deficit)) >= DEFICIT_MIN ? deficit : {}, inv, proibidos, k, solvente_id, nd);
       for (const nota of sem_nota) avisos.push(`a nota '${nota}' que você pediu não tem como ser feita nesta máquina`);
       const c = new Candidato({ nome: prot.nome, protagonista_id: prot.id, itens, massa_final_g: brief.massa_final_g, avisos, pontuacao: prot.pontuacao });
@@ -814,9 +893,17 @@
       c.escolhas_pendentes = prot.pendentes.concat(apoio ? apoio.pendentes : []);
       c.explicacao = [`Protagonista: ${prot.nome} (${porcento(prot.cobertura, 0)} do acorde original)`];
       if (apoio) c.explicacao.push(`Apoio: ${apoio.nome}`);
+      if (escore_c !== null) {
+        const notas_c = db.contraste.notas;
+        c.explicacao.push(`Contraste: ${notas_c[_nota_contraste(db, prot)]} × ${notas_c[_nota_contraste(db, apoio)]} (escore ${fixo(escore_c, 3)} — co-ocorrência Fragrantica × distância de embedding)`);
+      }
       if (preench.length) c.explicacao.push('Preenchimento para o que você pediu: ' + preench.map(([m]) => db.nome(m)).join(', '));
       if (nd.length) c.explicacao.push('Notas pedidas: ' + nd.map(([m]) => db.nome(m)).join(', '));
-      if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
+      if (estrutura) {
+        c.estrutura = { id: estrutura.id, nome: estrutura.nome };
+        c.explicacao.push(`Estrutura: ${estrutura.nome} (base de fixação, ~70%) — hipótese até cheirar`);
+      } else if (base.length) c.explicacao.push('Base: ' + base.map(([m]) => db.nome(m)).join(', '));
+      for (const aviso of [aviso_estrutura, aviso_contraste]) if (aviso) c.avisos.unshift(aviso);
       c.traducao = traducao; c.resultado = resultado;
       saida.push(c);
     }
@@ -1122,6 +1209,8 @@
       escolhas: c.escolhas_pendentes.map(p => ({ item: p.item, opcoes: p.opcoes })), formula,
       acorde_biblioteca: c.biblio ? { id: c.biblio } : null,      // veio da biblioteca gerada: hipótese para cheirar (§2.16)
     };
+    if (c.estrutura)   // MOTOR-2: base de fixação a ~70% — só entra quando há, para o cenário antigo sair idêntico (prova do golden)
+      out.estrutura = { id: c.estrutura.id, nome: c.estrutura.nome };
     if (mostrar_tecnico) {
       const maq = db.maquinas.get(maquina_id);
       const nome_do_canal = i => db.nome(maq.por_canal.get(i.canal).material_id);
@@ -1218,7 +1307,9 @@
       nota, comentario: typeof r.comentario === 'string' ? r.comentario.slice(0, 300) || null : null,
       criada_em: typeof r.criada_em === 'string' ? r.criada_em : agora(), pai_id: null,
       respostas: Object.values(resp).every(v => Array.isArray(v) && v.every(x => typeof x === 'string')) ? resp : {},
-      protagonista_id: Number.isInteger(r.protagonista_id) ? r.protagonista_id : 0, itens };
+      protagonista_id: Number.isInteger(r.protagonista_id) ? r.protagonista_id : 0,
+      estrutura_id: typeof r.estrutura_id === 'string' ? r.estrutura_id : null,   // MOTOR-2: junto com a receita importada
+      sensacao: typeof r.sensacao === 'string' ? r.sensacao : null, contraste: !!r.contraste, itens };
   }
 
   function limpar_respostas(q, respostas) {                // receita salva por uma versão antiga do questionário: fica só o que ele ainda conhece
@@ -1257,6 +1348,10 @@
       }
       const trad = traduzir_itens(db, itens, r.massa_final_g, mid);
       const c = new Candidato({ nome: r.nome, protagonista_id: r.protagonista_id || 0, itens, massa_final_g: r.massa_final_g });
+      if (r.estrutura_id) {                                   // MOTOR-2: a linha honesta também na receita reaberta
+        const est = db.estruturas.find(e => e.id === r.estrutura_id);
+        if (est) c.estrutura = { id: est.id, nome: est.nome };
+      }
       c.traducao = trad;
       c.resultado = trad.completa && !sumidos.length ? validar(db, mid, { itens: trad.itens, massa_final_g: r.massa_final_g }) : null;
       const out = descrever(db, mid, c, tecnico, evitar);
@@ -1303,6 +1398,9 @@
         if (proxima(r, q, cap) !== null) throw new ErroDeUso('o questionário ainda não terminou');
         const b = montar_brief(db, r, q, cap);
         b.biblioteca = !!corpo.biblioteca;          // a outra fonte de acordes (§2.18): o pedido é quem decide
+        b.sensacao = corpo.sensacao || null;        // MOTOR-2: vêm do corpo (a tela depois do questionário), não do seed
+        b.estrutura_id = corpo.estrutura_id || null;
+        b.contraste = !!corpo.contraste;
         return { candidatos: compor(db, mid, b, 3).map(c => descrever(db, mid, c, !!corpo.tecnico)), ajustes: Object.keys(AJUSTES) };
       },
 
@@ -1310,6 +1408,9 @@
         const mid = maquina(corpo), b = montar_brief(db, corpo.respostas || {}, q, cap_de(mid));
         const pid = parseInt(corpo.protagonista_id, 10) || 0;
         b.biblioteca = !!corpo.biblioteca || pid >= OFFSET_BIBLIOTECA;   // protagonista da biblioteca: o próprio id diz (a receita salva não guarda a fonte)
+        b.sensacao = corpo.sensacao || null;        // MOTOR-2: a receita salva guarda para refinar com a mesma estrutura
+        b.estrutura_id = corpo.estrutura_id || null;
+        b.contraste = !!corpo.contraste;
         const base = new Candidato({ nome: '', protagonista_id: pid, itens: new Map(), massa_final_g: b.massa_final_g });
         const novo = refinar(db, mid, base, b, corpo.ajuste);
         if (novo === null) throw new ErroDeUso('não consegui refinar esse pedido nesta máquina');
@@ -1371,6 +1472,8 @@
           id: todas.reduce((m, x) => Math.max(m, x.id), 0) + 1, nome: String(corpo.nome || 'Sem nome').slice(0, 80), maquina: mid,
           massa_final_g: Number(corpo.massa_final_g || 26.5), nota, comentario: String(corpo.comentario || '').slice(0, 300) || null,
           criada_em: agora(), pai_id: corpo.pai_id || null, respostas: corpo.respostas || {}, protagonista_id: parseInt(corpo.protagonista_id, 10) || 0,
+          estrutura_id: typeof corpo.estrutura_id === 'string' ? corpo.estrutura_id : null,   // MOTOR-2: para refinar com a mesma estrutura
+          sensacao: typeof corpo.sensacao === 'string' ? corpo.sensacao : null, contraste: !!corpo.contraste,
           itens: itens.map(([m, g]) => { const x = db.materiais.get(m); return { id: m, cas: x.cas, nome: x.nome, gramas: g }; }),
         };
         armazenamento.gravar(todas.concat([r]));
@@ -1382,8 +1485,9 @@
       '/api/receita': corpo => {
         const r = achar(corpo.id), mid = [corpo.maquina, r.maquina].find(m => db.maquinas.has(m)) || db.maquinas.keys().next().value;   // a máquina de origem pode ter saído dos dados
         const respostas = limpar_respostas(q, r.respostas), evitados = montar_brief(db, respostas, q, cap_de(mid)).evitar_materiais;
-        return { receita: { ...resumo(r), respostas, protagonista_id: r.protagonista_id }, maquina: mid, candidato: apresentar_salva(r, mid, !!corpo.tecnico, evitados),
-          ajustes: Object.keys(AJUSTES), evitados };
+        return { receita: { ...resumo(r), respostas, protagonista_id: r.protagonista_id,
+          estrutura_id: r.estrutura_id || null, sensacao: r.sensacao || null, contraste: !!r.contraste },   // MOTOR-2: o app devolve no refinar
+          maquina: mid, candidato: apresentar_salva(r, mid, !!corpo.tecnico, evitados), ajustes: Object.keys(AJUSTES), evitados };
       },
 
       '/api/excluir': corpo => { achar(corpo.id); armazenamento.gravar(lista().filter(x => x.id !== corpo.id)); return {}; },

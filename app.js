@@ -23,6 +23,7 @@
   let cru = null;                                           // o dados.json como veio (o Banco não guarda o que o motor não usa; o nariz digital precisa da chave "especialista")
   let espDados = null, espRespostas = {};                   // especialista.json baixado na 1ª recomendação e as respostas das 11 perguntas
   let usandoBiblio = false, biblioPronta = false;           // a composição está usando os acordes da biblioteca (§2.18), e o biblioteca.json já baixado
+  let sensacao = null, contraste = false;                   // MOTOR-2: a escolha da tela de sensações (null = motor de sempre)
   let vez = 0;                                              // cada tela nova ganha a vez; quem terminou depois de perdê-la não desenha por cima
 
   function el(t, a = {}, ...f) {
@@ -85,13 +86,35 @@
     const minha = ++vez;
     candidatos = [];
     usandoBiblio = false;                       // questionário novo: começa nas sugestões do kit (a biblioteca é convite à parte)
+    if (!Object.keys(respostas).length) sensacao = null, contraste = false;   // MOTOR-2: pedido novo começa sem sensação
     marcarAba('novo');
     const j = await api('/api/proxima', base());
     if (minha !== vez) return;
     $('#hist').replaceChildren(...j.caminho.map((c, i) => el('div', {}, c.pergunta + ' ', el('b', {}, c.respostas.join(', ')),
       el('button', { class: 'sec', onclick: () => { const novo = {}; j.caminho.slice(0, i).forEach(x => { novo[x.no] = respostas[x.no]; }); respostas = novo; passo(); } }, 'alterar'))));
-    if (!j.pergunta) return compor();
+    if (!j.pergunta) return telaSensacao();
     desenhar(j.pergunta, j.caminho.length === 0);        // na 1ª pergunta, o cartão do nariz digital dá o atalho das 11 perguntas
+  }
+
+  /* MOTOR-2: a pergunta das sensações vem DEPOIS do questionário, direto no app (não é nó do seed — o golden do
+   * questionário não muda). "Tanto faz" é a primeira e já vem marcada: quem só dá Continuar recebe o motor de sempre. */
+  function telaSensacao() {
+    const inputs = [];
+    const linhas = [{ id: '', rotulo: 'Tanto faz' }, ...db.sensacoes.map(s => ({ id: s.id, rotulo: s.rotulo }))].map(o => {
+      const i = el('input', { type: 'radio', name: 'op', value: o.id });
+      inputs.push(i);
+      return el('label', { class: 'op' }, i, o.rotulo);
+    });
+    inputs[0].checked = true;
+    const esc = el('input', { type: 'checkbox' });
+    const bt = el('button', { onclick: () => {
+      sensacao = (inputs.find(i => i.checked) || inputs[0]).value || null;
+      contraste = esc.checked;
+      compor();
+    } }, 'Continuar');
+    $('#tela').replaceChildren(el('div', { class: 'card' }, el('h2', {}, 'Que sensação você quer?'),
+      el('div', { class: 'dica' }, 'A sensação escolhe a estrutura — a base de fixação que segura o perfume na pele (~70% da fórmula).'),
+      ...linhas, el('label', { class: 'op' }, esc, 'Com contraste'), el('div', { class: 'linha' }, bt)));
   }
 
   function desenhar(p, comNariz = false) {
@@ -140,7 +163,7 @@
       : 'Baixando a biblioteca de acordes — é uma vez só, depois fica guardada no aparelho…') : 'Montando seus perfumes…'));
     try {
       if (bib) await carregarBiblioteca();
-      const j = await api('/api/compor', { ...base(), biblioteca: bib });
+      const j = await api('/api/compor', { ...base(), biblioteca: bib, sensacao, contraste });
       if (minha !== vez) return;
       candidatos = j.candidatos;
       ajustes = j.ajustes;
@@ -178,6 +201,9 @@
       el('span', { class: 'chip atencao' }, 'acorde da biblioteca'),
       ' Ninguém cheirou este acorde ainda: é uma hipótese para cheirar — ',
       el('a', { href: 'catalogo.html?acorde=' + encodeURIComponent(c.acorde_biblioteca.id) }, 'ver no catálogo')));
+    if (c.estrutura) box.append(el('p', { class: 'dica' },
+      el('span', { class: 'chip atencao' }, 'estrutura'),
+      ' ' + c.estrutura.nome + ' (base de fixação, ~70%) — hipótese até cheirar'));
     if (c.tecnico) box.append(blocoTecnico(c.tecnico));
     if (acao) box.append(el('div', { class: 'linha', style: 'margin-top:8px' }, el('button', { onclick: acao }, rotulo)));
     return box;
@@ -372,7 +398,8 @@
     const ref = el('div', { class: 'linha' }, ...ajustes.map(a => el('button', { class: 'sec', onclick: async () => {
       const minha = ++vez;
       try {
-        const j = await api('/api/refinar', { ...base(), protagonista_id: c.protagonista_id, ajuste: a });
+        const j = await api('/api/refinar', { ...base(), protagonista_id: c.protagonista_id, ajuste: a,
+          estrutura_id: c.estrutura ? c.estrutura.id : null, sensacao, contraste });   // MOTOR-2: o refino mantém a estrutura
         if (minha !== vez) return;
         candidatos = [j.candidato];
         tituloResultado = 'Receita refeita';
@@ -394,7 +421,8 @@
       if (!nota) { msg.textContent = 'Escolha uma nota de 1 a 5.'; return; }
       try {
         const j = await api('/api/salvar', { maquina, respostas, nome: atualC.titulo, itens: atualC.formula, massa_final_g: atualC.massa_final_g,
-          protagonista_id: c.protagonista_id, pai_id: pai, nota, comentario: com.value });
+          protagonista_id: c.protagonista_id, pai_id: pai, nota, comentario: com.value,
+          estrutura_id: atualC.estrutura ? atualC.estrutura.id : null, sensacao, contraste });   // MOTOR-2: a receita guarda a estrutura
         pai = j.id;
         msg.textContent = 'Receita salva. Ela está em "Minhas receitas".';
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist();     // pede ao navegador para não apagar as receitas sozinho
@@ -442,7 +470,8 @@
         if (!certeza) { certeza = true; bExcluir.textContent = 'Toque de novo para excluir'; bExcluir.classList.add('ruim'); return; }
         await api('/api/excluir', { id }); listar();
       } }, 'Excluir');
-      const ajustarQuantidades = () => { respostas = r.respostas; pai = r.id; ajustes = j.ajustes; aberta = null; $('#hist').replaceChildren(); marcarAba('novo'); feito(j.candidato); };
+      const ajustarQuantidades = () => { respostas = r.respostas; pai = r.id; ajustes = j.ajustes; aberta = null;   // MOTOR-2: a nova versão salva com a estrutura da receita
+        sensacao = r.sensacao || null; contraste = !!r.contraste; $('#hist').replaceChildren(); marcarAba('novo'); feito(j.candidato); };
       $('#tela').replaceChildren(el('div', { class: 'linha' }, el('button', { class: 'sec', onclick: listar }, '← Minhas receitas')), cartao(j.candidato, null),
         el('div', { class: 'card' }, el('div', { class: 'estrelas' }, estrelas(r.nota)), el('p', { class: 'dica' }, 'Salva em ' + data(r.criada_em) + (r.comentario ? ': ' + r.comentario : '')),
           el('div', { class: 'linha' }, el('button', { onclick: ajustarQuantidades }, 'Ajustar quantidades e salvar como nova versão'), ...botaoImprimir(() => j.candidato, () => r.respostas))),
@@ -456,9 +485,12 @@
     respostas = j.receita.respostas;
     pai = j.receita.id;
     ajustes = j.ajustes;
+    sensacao = j.receita.sensacao || null;                 // MOTOR-2: melhorar mantém a estrutura que a receita guardou
+    contraste = !!j.receita.contraste;
     const minha = ++vez;
     try {
-      const novo = (await api('/api/refinar', { ...base(), protagonista_id: j.receita.protagonista_id, ajuste })).candidato;
+      const novo = (await api('/api/refinar', { ...base(), protagonista_id: j.receita.protagonista_id, ajuste,
+        estrutura_id: j.receita.estrutura_id || null, sensacao, contraste })).candidato;
       if (minha !== vez) return;
       candidatos = [novo];
       tituloResultado = 'Receita refeita';
