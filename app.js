@@ -1055,11 +1055,32 @@
       msgs.textContent = 'Fórmula exportada — quem imprime recebe a fórmula.';
     } }, 'Exportar fórmula (.json)');
     /* SITE-3: a página da própria máquina abre numa aba nova com a fórmula no endereço (https não fala com http por
-     * fetch; abrir uma página pode). O que vai é a dosagem vidro a vidro que a conferência acima validou. */
+     * fetch; abrir uma página pode). O que vai é a dosagem vidro a vidro que a conferência acima validou.
+     * FW-2: a máquina dosa por CONTAGEM DE GOTAS (sem balança, D1 revisada) — cada vidro precisa da massa de gota
+     * CALIBRADA (Mapa da máquina → Calibrar este vidro). Canal sem calibração (ou calibração desatualizada:
+     * trocou o material ou a diluição do vidro) NÃO manda — o app nomeia o vidro, em vez de deixar a máquina
+     * recusar lá na frente. O solvente (etanol) vai marcado: fio contínuo por passos, mg_gota vale mg/passo. */
     const btMaquina = el('button', { class: 'sec', disabled: !pch || !pch.ok, onclick: () => {
       const ender = ipMaq.ler();
       if (!ender) { msgs.textContent = 'Primeiro salve o IP da máquina em Mapa da máquina → Máquina vinculada (o número aparece na telinha).'; return; }
-      const url = Site.urlImprimir(ender, Site.pacoteDaMaquina(f.titulo + ' · ' + ml + ' ml', g, pch.linhas));
+      const maq = db.maquinas.get(maquina);
+      const pend = [];
+      const linhas = pch.linhas.filter(l => l.usar_g > 0).map(l => {
+        const c = maq.por_canal.get(l.canal);
+        const mat = c && c.material_id ? db.materiais.get(c.material_id) : null;
+        const ent = calibracao.do(Motor.ID_PROPRIA, l.canal);
+        let mg = ent ? ent.fator_mg_passo : null;
+        if (ent && c && mat) {
+          const conf = Calibracao.conferencias(ent, c, mat, doseMinimaMg());
+          if (conf.desatualizada) { pend.push('vidro ' + l.canal + ' (' + l.material + '): ' + conf.avisos[0]); mg = null; }
+        } else if (!ent) pend.push('vidro ' + l.canal + ' (' + l.material + ') nunca foi calibrado');
+        return { canal: l.canal, material: l.material, usar_g: l.usar_g, mg_gota: mg, solvente: !!(mat && mat.tipo_material === 'solvent') };
+      });
+      if (pend.length) {
+        msgs.textContent = 'Calibre antes de mandar — ' + pend.join('; ') + ' (Mapa da máquina → Calibrar este vidro).';
+        return;
+      }
+      const url = Site.urlImprimir(ender, Site.pacoteDaMaquina(f.titulo + ' · ' + ml + ' ml', g, linhas));
       window.open(url, '_blank', 'noopener');
       msgs.textContent = 'Abri a página da máquina (' + ender + ') numa aba nova: confira lá e toque em "Imprimir agora".';
     } }, 'Mandar para a máquina');

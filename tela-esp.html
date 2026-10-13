@@ -248,13 +248,14 @@
 <p class="nota">
   <b>Vínculo:</b> o QR carrega <kbd>perfume://vincular?d=&lt;aparelho&gt;&amp;c=&lt;código&gt;</kbd> —
   o app escaneia e a nuvem registra a posse (F0 do docs/11 §1.4).<br>
-  <b>Dosagem:</b> a tela entra sozinha quando a fila começa e volta ao menu ao terminar. A barra mede a
-  <b>fila</b> (itens concluídos ÷ total): o firmware não publica quanto do item atual já caiu.<br>
-  <b>Fila simulada:</b> materiais reais da paleta MVP64; canais, alvos e pesos são de demonstração. O nome
-  sai cortado em 31 bytes, como o firmware guarda.<br>
+  <b>Dosagem:</b> a tela entra sozinha quando a fila começa e volta ao menu ao terminar. Durante o item a
+  barra mede as <b>gotas contadas</b> (ou os passos, no solvente); fora dele, a <b>fila</b>.<br>
+  <b>Fila simulada:</b> materiais reais da paleta MVP64 nos canais 0 a 4 (as 5 bombas da F0); gotas,
+  massa de gota e passos são de demonstração. O nome sai cortado em 31 bytes, como o firmware guarda.<br>
   <b>No aparelho:</b> as fontes de fábrica do TFT_eSPI não têm acento — o firmware troca á→a, ç→c
   (“Endereço” aparece “Endereco”).<br>
-  <b>Sem balança:</b> a máquina não tem balança (D1 revisada, 03/10 — gotas contadas a laser); a tela não mostra peso.
+  <b>Sem balança:</b> a máquina não tem balança (D1 revisada, 03/10) — dosagem por CONTAGEM DE GOTAS na
+  barreira óptica do carro. O solvente (etanol) não goteja: fio contínuo dosado por passos calibrados.
 </p>
 
 <script>
@@ -269,23 +270,23 @@ const S = {
   estado: "idle",               // Servidor::estado(): idle|dosando|erro
   executando: false,            // Servidor::executando()
   ip: "192.168.0.42",
-  peso: 0.0,                    // só da simulação: a massa que "caiu", para o obtido da última dose (não aparece na tela)
+  prog: null,                   // Dosador::progresso_*(): {feito, alvo, em_gotas} do item em curso
   formula: { nome: "Ambre 51", atual: 0, total: 0 }, // atual = item_atual() = itens já concluídos
-  fila: [],                     // [{nome, canal, alvo}] como o firmware guardou
-  ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado}
+  fila: [],                     // [{nome, canal, alvo, gotas|solvente}] como o firmware guardou
+  ultima: null,                 // ultimo_resultado(): {canal, alvo, obtido, estado, gotas, solvente}
   doseAnim: null,
   avisos: [],                   // {texto, quando, tipo}
   boot: Date.now() - 3723e3,
 };
-// Fila SIMULADA: materiais reais da paleta MVP64 (dados/seed/paleta_mvp64.json);
-// canais e alvos são só para a demonstração.
+// Fila SIMULADA: materiais reais da paleta MVP64 (dados/seed/paleta_mvp64.json)
+// nos canais 0–4 (as 5 bombas da F0). FW-2: alvo em GOTAS (massa de gota
+// calibrada no app) — o etanol é solvente, fio contínuo por PASSOS.
 const FILA_SIM = [
-  { nome: "Iso E Super", canal: 3, alvo: 0.842 },
-  { nome: "Hedione", canal: 10, alvo: 0.390 },
-  { nome: "Aldeído Hexil Cinâmico (JASMONAL)", canal: 17, alvo: 0.125 },
-  { nome: "Ambroxan", canal: 4, alvo: 0.060 },
-  { nome: "Álcool Feniletílico", canal: 11, alvo: 0.275 },
-  { nome: "Galaxolide", canal: 18, alvo: 0.510 },
+  { nome: "Iso E Super", canal: 0, alvo: 0.842, gotas: 105, mgGota: 8.0 },   // 105 × 8 mg = 0,840 g
+  { nome: "Hedione", canal: 1, alvo: 0.390, gotas: 30, mgGota: 13.0 },      // 30 × 13 mg = 0,390 g
+  { nome: "Aldeído Hexil Cinâmico (JASMONAL)", canal: 2, alvo: 0.125, gotas: 16, mgGota: 8.0 }, // 16 × 8 mg = 0,128 g
+  { nome: "Ambroxan", canal: 3, alvo: 0.060, gotas: 6, mgGota: 10.0 },      // 6 × 10 mg = 0,060 g
+  { nome: "Etanol 96 (veículo)", canal: 4, alvo: 6.900, solvente: true, passos: 986, mgPasso: 7.0 }, // 986 × 7 mg
 ];
 // O firmware guarda o nome em char[32] (servidor.cpp: strncpy de 31 bytes):
 // a tela mostra o que sobra desse corte, não o nome inteiro do app.
@@ -338,10 +339,12 @@ function seloEstado(mini) {
     : S.estado === "erro" ? ["erro", "erro"] : ["pronta", "pronta"];
   return `<span class="selo ${classe}${mini ? " mini" : ""}"><i></i>${texto}</span>`;
 }
-// "nome · X g · canal N" — nome em destaque, detalhes em cinza
+// "nome · N gotas · canal N" — nome em destaque, detalhes em cinza (FW-2: a
+// dose é em gotas contadas; no solvente, gramas por passos)
 function linhaItem(it) {
+  const dose = it.solvente ? `${g3(it.alvo)} (passos)` : `${it.gotas} gotas`;
   return `<span class="corta forte">${it.nome || `canal ${it.canal}`}</span>` +
-         `<span class="det">${g3(it.alvo)}</span><span class="det">canal ${it.canal}</span>`;
+         `<span class="det">${dose}</span><span class="det">canal ${it.canal}</span>`;
 }
 const naFila = () => S.executando && S.formula.atual < S.formula.total;
 
@@ -373,7 +376,9 @@ function painelFila() {
       ? `<span class="erro-txt">a fórmula parou com erro</span>` : `<span class="forte">nenhuma fórmula na fila</span>`}</div>
     <div class="linha"><span class="rotulo">Última dose</span>${u
       ? `<span class="forte">canal ${u.canal}</span><span class="det ${u.estado === "OK" ? "ok-txt" : "erro-txt"}">${u.estado}</span>` +
-        `<span class="det forte">${u.obtido.toFixed(3)} de ${g3(u.alvo)}</span>`
+        (u.solvente
+          ? `<span class="det forte">${u.obtido.toFixed(3)} de ${g3(u.alvo)} g</span>`
+          : `<span class="det forte">${u.gotas} gotas = ${g3(u.obtido)}</span>`)
       : `<span class="fraco">nenhuma desde que ligou</span>`}</div>
     <div class="linha"><span class="rotulo"></span><span class="fraco">envie uma fórmula pelo app</span></div>`;
 }
@@ -386,7 +391,7 @@ function telaStatus() {
       <div class="bloco"><span class="rotulo">WiFi</span><span class="valor">${S.wifi.ssid}</span></div>
       <div class="bloco"><span class="rotulo">Endereço IP</span><span class="valor">${S.ip}</span></div>
       <div class="bloco"><span class="rotulo">Estado</span>${seloEstado(true)}</div>
-      <div class="bloco"><span class="rotulo">Canais</span><span class="valor">20 (0 a 19)</span></div>
+      <div class="bloco"><span class="rotulo">Bombas</span><span class="valor">5 (canais 0 a 4)</span></div>
     </div>
     <div class="painel">${painelFila()}</div>
     <div class="rodape-linha">ligada há ${uptime()}<span class="det">tocar para voltar</span></div>`;
@@ -396,7 +401,10 @@ function telaDose() {
   const it = dentro ? S.fila[f.atual] : null, prox = dentro ? S.fila[f.atual + 1] : null;
   const parouComErro = !S.executando && S.estado === "erro";
   const feitos = Math.min(f.atual, f.total), frac = f.total ? feitos / f.total : 0;
-  const mostraBarra = f.total > 0 && (dentro || (!S.executando && !parouComErro));
+  // FW-2: durante o item, a barra mede as GOTAS contadas (ou os passos do
+  // solvente) — igual o Dosador publica no progresso; fora dele, a fila.
+  const prog = dentro && S.prog && S.prog.alvo ? S.prog : null;
+  const pFrac = prog ? prog.feito / prog.alvo : 0;
   $("titulo").textContent = S.executando ? "Dosagem em curso" : "Dosagem";
   $("tituloDir").textContent = "";
   $("corpo").className = "corpo v2 dose";
@@ -404,11 +412,16 @@ function telaDose() {
     <div class="meta">${dentro ? `<span class="rotulo">Fórmula</span><span class="corta forte">${f.nome}</span><span class="dir">item ${f.atual + 1} de ${f.total}</span>` : ""}</div>
     <div class="item-atual">${dentro
       ? `<div class="nome corta">${it.nome || `canal ${it.canal}`}</div>
-         <div class="dets"><span class="forte">canal ${it.canal}</span><span class="det forte">alvo ${g3(it.alvo)}</span></div>`
+         <div class="dets"><span class="forte">canal ${it.canal}</span><span class="det forte">${it.solvente
+            ? `solvente · alvo ${g3(it.alvo)}`
+            : `alvo ${it.gotas} gotas`}</span></div>`
       : `<div class="nome corta${parouComErro ? " erro-txt" : ""}">${parouComErro ? "Fila parada com erro" : "Fila encerrada"}</div>
          <div class="dets"><span class="fraco">${f.total ? (parouComErro ? `parou no item ${f.atual + 1} de ${f.total}` : `${feitos} de ${f.total} itens dosados`) : "nenhuma fórmula na fila"}</span></div>`}
     </div>
-    ${mostraBarra ? `
+    ${prog ? `
+    <div class="prog-rot"><span class="rotulo">${prog.em_gotas ? "Gotas" : "Solvente"}</span><span class="forte">${prog.feito} de ${prog.alvo} ${prog.em_gotas ? "contadas" : "passos"}</span><span class="pct">${Math.round(pFrac * 100)}%</span></div>
+    <div class="barra-prog"><div style="width:${(pFrac * 100).toFixed(1)}%${prog.feito ? ";min-width:32px" : ""}"></div></div>
+    <div class="linha seguir" style="margin-top:6px"><span class="rotulo">Fila</span><span class="fraco">${feitos} de ${f.total} concluídos</span></div>` : (f.total > 0 && (dentro || (!S.executando && !parouComErro))) ? `
     <div class="prog-rot"><span class="rotulo">Fila</span><span class="forte">${feitos} de ${f.total} concluídos</span><span class="pct">${Math.round(frac * 100)}%</span></div>
     <div class="barra-prog"><div style="width:${(frac * 100).toFixed(1)}%${feitos ? ";min-width:32px" : ""}"></div></div>` : ""}
     ${dentro ? `<div class="linha seguir"><span class="rotulo">A seguir</span>${prox ? linhaItem(prox) : `<span class="fraco">nada: este é o último item</span>`}</div>` : ""}
@@ -517,18 +530,22 @@ async function simularDose() {
   S.formula = { nome: "Ambre 51", atual: 0, total: S.fila.length };
   S.executando = true;
   S.estado = "dosando";
-  S.peso = 0; // frasco vazio tarado antes de começar
+  S.prog = null;
   if (S.menu === "principal") ir("dose"); else redesenharVivo();
   for (let i = 0; i < S.fila.length; i++) {
     S.formula.atual = i;
-    const it = S.fila[i], antes = S.peso;
+    const it = S.fila[i];
+    const alvo = it.solvente ? it.passos : it.gotas; // unidade do item: gotas ou passos
     for (let p = 1; p <= 20; p++) {
-      S.peso = antes + it.alvo * p / 20; // gotas caindo no MESMO frasco
+      S.prog = { feito: Math.round(alvo * p / 20), alvo, em_gotas: !it.solvente };
       redesenharVivo();
       await atraso(70);
     }
-    S.ultima = { canal: it.canal, alvo: it.alvo, obtido: S.peso - antes, estado: "OK" };
+    // massa = gotas × massa da gota (ou passos × mg/passo) — sem balança
+    const obtido = it.solvente ? it.passos * it.mgPasso / 1000 : it.gotas * it.mgGota / 1000;
+    S.ultima = { canal: it.canal, alvo: it.alvo, obtido, estado: "OK", gotas: it.solvente ? 0 : it.gotas, solvente: !!it.solvente };
   }
+  S.prog = null;
   S.formula.atual = S.formula.total;
   S.executando = false;
   S.estado = "idle";
@@ -543,8 +560,8 @@ function simularErro() { // como o Servidor faz quando a mesa falha no meio da f
 }
 function gerarAviso() {
   const exemplos = [
-    ["Canal 7: SEM FLUXO", "erro"], ["Canal 12: VAZAMENTO", "erro"],
-    ["Canal 3: ESTOURO", "erro"], ["mesa: homing falhou (endstops?)", "erro"],
+    ["Canal 2: SEM FLUXO — linha seca?", "erro"], ["Canal 0: sem massa de gota calibrada", "erro"],
+    ["mesa: homing falhou (endstops?)", "erro"],
     ["WiFi salvo — reinicie o ESP", "ok"], ["atualização instalada", "info"],
   ];
   const [texto, tipo] = exemplos[Math.floor(Math.random() * exemplos.length)];

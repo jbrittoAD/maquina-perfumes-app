@@ -305,15 +305,29 @@
    * content), mas deixa ABRIR uma página http. Então o app abre a página que a própria máquina serve,
    * http://<ip>/imprimir#f=<pacote>, com a fórmula no FRAGMENTO (que não vai na requisição); lá a página da máquina
    * confere os canais contra o que ela tem, dosa (POST /api/formula) e acompanha. Pacote: software/PROTOCOLO.md. */
-  const VERSAO_PACOTE = 1;
+  const VERSAO_PACOTE = 2;
   const CHAVE_IP = 'perfume.maquina.ip.v1';
 
+  /* FW-2 (13/10): a máquina não tem balança (D1 revisada) — dosa por CONTAGEM DE GOTAS com a massa de gota
+   * CALIBRADA no app (Calibracao, 50 gotas na balança de bancada). O pacote v2 leva por item o mg_gota (no
+   * solvente vale mg por PASSO: etanol não goteja, fio contínuo) e as gotas do alvo, na MESMA conta do firmware
+   * (unidades_do_alvo em dose_regra.h: arredonda, piso de 1, zero sem massa — nunca chuta). */
+  const gotasDoAlvo = (gramas, mg_gota) => mg_gota > 0 ? Math.max(1, Math.round(gramas * 1000 / mg_gota)) : 0;
+
   /* As linhas da pré-checagem (vidro a vidro, o que o motor validou) viram o pacote; o canal é o do mapa escolhido
-   * no app, e a página da máquina recusa canal que ela não tem — com a explicação. */
+   * no app, e a página da máquina recusa canal que ela não tem — com a explicação. Sem massa de gota calibrada o
+   * pacote NÃO sai: a máquina recusaria o vidro (sem_massa_gota), então o erro nomeia o vidro aqui mesmo. */
   function pacoteDaMaquina(nome, massa_g, linhas) {
     const itens = linhas.filter(l => l.usar_g > 0)
-      .map(l => ({ canal: l.canal, nome: String(l.material), gramas: Math.round(l.usar_g * 10000) / 10000 }));
+      .map(l => {
+        const it = { canal: l.canal, nome: String(l.material), gramas: Math.round(l.usar_g * 10000) / 10000, mg_gota: l.mg_gota };
+        if (l.solvente) it.solvente = true; else it.gotas = gotasDoAlvo(l.usar_g, l.mg_gota);
+        return it;
+      });
     if (!itens.length) throw new ErroDeUso('a fórmula não tem nada para dosar');
+    const semCal = itens.filter(i => !(i.mg_gota > 0));
+    if (semCal.length) throw new ErroDeUso('sem massa de gota calibrada: ' + semCal.map(i => i.nome + ' (canal ' + i.canal + ')').join(', ')
+      + ' — calibre o vidro em Mapa da máquina → Calibrar este vidro');
     return { v: VERSAO_PACOTE, nome: String(nome || 'Fórmula').slice(0, 80), massa_g: Math.round(massa_g * 100) / 100, itens };
   }
 
@@ -352,7 +366,7 @@
   }
 
   return {
-    VERSAO_PACOTE, CHAVE_IP, pacoteDaMaquina, codificarPacote, decodificarPacote, enderecoDaMaquina, urlDaMaquina, urlImprimir, ipDaMaquina,
+    VERSAO_PACOTE, CHAVE_IP, pacoteDaMaquina, gotasDoAlvo, codificarPacote, decodificarPacote, enderecoDaMaquina, urlDaMaquina, urlImprimir, ipDaMaquina,
     ErroDeUso, FORMATO_ANUNCIO, CHAVE_MARKETPLACE, CHAVE_VINCULOS,
     PRECO_INICIAL_REF, PRECO_POR_ML_REF, ROTULO_PRECO_REF, ML_DA_BASE, SPLIT, TEXTO_SPLIT, TEXTO_GATEWAY, MAX_ITENS,
     LIMIAR_ML, LIMIAR_G, QTD_SUGERIDA, ESTADO_HONESTO,
