@@ -17,7 +17,7 @@ h1{font-size:20px;margin:8px 0 2px}h2{font-size:18px;margin:12px 0 8px}
 input,select,button{font:inherit;color:var(--tx)}input[type=search],input[type=number],input[type=text],select{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px;min-width:0}
 button{border:0;border-radius:10px;padding:12px 18px;background:var(--ac);color:#fff;cursor:pointer;min-height:44px}button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}button:disabled{opacity:.45;cursor:default}
 input[type=checkbox],input[type=radio]{width:20px;height:20px;accent-color:var(--ac)}
-.abas{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px}.abas button{flex:1;min-width:0}.abas button.sec{border-color:var(--bd)}
+.abas{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px}.abas button{flex:1;min-width:0}.abas button.sec{border-color:var(--bd)}.abas button[aria-current="page"]{background:var(--ac);border-color:var(--ac);color:#fff}
 @media (max-width:480px){.abas button{flex:1 1 calc(50% - 4px)}}
 .linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dica{color:var(--mut);font-size:13px;margin:6px 0}
 .barra{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0}.barra .grow{flex:1}
@@ -66,7 +66,7 @@ body{background:#fff}main{display:none}
 <h1>Máquina de Perfumes</h1>
 <p class="sub">Catálogo de acordes: escolha, imprima e leve à bancada. Sem internet: tudo nesta página.</p>
 <nav class="abas" aria-label="Navegação">
- <button class="app-nav" data-aba="novo">Novo perfume</button>
+ <button class="app-nav sec" data-aba="novo">Novo perfume</button>
  <button class="app-nav sec" data-aba="receitas">Minhas receitas</button>
  <button class="app-nav sec" data-aba="mapa">Minha máquina</button>
  <button class="sec" id="nav-acordes" aria-current="page">Acordes</button>
